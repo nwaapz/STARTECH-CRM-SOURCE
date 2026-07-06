@@ -8,6 +8,7 @@ const links = [
   { to: '/serials', label: 'تولید سریال' },
   { to: '/reports', label: 'گزارش‌ها' },
   { to: '/communications', label: 'ارتباطات' },
+  { to: '/customers', label: 'باشگاه مشتریان' },
   { to: '/mass-sms', label: 'ارسال پیام انبوه' },
   { to: '/bots', label: 'ربات‌ها', matchPrefix: true },
   { to: '/messages', label: 'تنظیمات پیام های ارسالی' },
