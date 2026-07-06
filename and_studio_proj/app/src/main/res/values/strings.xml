@@ -1,0 +1,213 @@
+<resources>
+    <string name="app_name">درگاه ایران</string>
+    <string name="splash_company">صنعت رامش آژند</string>
+    <string name="splash_phone">09902648065</string>
+
+    <string name="login_title">ورود به درگاه ایران</string>
+    <string name="login_password_hint">رمز عبور</string>
+    <string name="login_button">ورود</string>
+    <string name="login_error">رمز عبور اشتباه است</string>
+
+    <string name="notification_channel_name">درگاه ایران</string>
+    <string name="notification_title">درگاه ایران</string>
+    <string name="notification_text">در حال دریافت پیامک‌ها</string>
+
+    <string name="gateway_running">سرویس فعال است</string>
+    <string name="gateway_stopped">سرویس خاموش است</string>
+    <string name="gateway_running_hint">پیام‌های دریافتی به سرور ارسال و پاسخ به فرستنده برگردانده می‌شود.</string>
+    <string name="gateway_stopped_hint">برای شروع، دکمه «روشن کردن» را بزنید.</string>
+
+    <string name="start_gateway">روشن کردن</string>
+    <string name="stop_gateway">خاموش کردن</string>
+    <string name="request_permissions">دریافت دسترسی‌ها</string>
+    <string name="battery_settings">تنظیمات باتری</string>
+
+    <string name="activity_log">پیام‌های اخیر</string>
+    <string name="clear_log">پاک کردن</string>
+    <string name="no_messages_yet">هنوز پیامی ثبت نشده است.</string>
+
+    <string name="permissions">دسترسی‌ها</string>
+    <string name="sms_permission">پیامک</string>
+    <string name="notification_permission">اعلان</string>
+    <string name="contacts_permission">مخاطبین</string>
+    <string name="permission_granted">دارد</string>
+    <string name="permission_denied">ندارد</string>
+
+    <string name="log_inbound">ورودی:</string>
+    <string name="log_outbound">خروجی:</string>
+    <string name="log_error">خطا:</string>
+
+    <string name="status_sent">ارسال شد</string>
+    <string name="status_gateway_error">خطای سرور</string>
+    <string name="status_failed">ناموفق</string>
+
+    <string name="sim_selection_title">سیم‌کارت درگاه</string>
+    <string name="sim_selection_hint">فقط پیام‌های سیم‌کارت‌های انتخاب‌شده پردازش می‌شوند. پاسخ از همان سیم‌کارت ارسال می‌شود.</string>
+    <string name="sim_unknown">سیم‌کارت پیش‌فرض</string>
+    <string name="log_sim">سیم‌کارت:</string>
+    <string name="sim_must_keep_one">حداقل یک سیم‌کارت باید فعال باشد.</string>
+
+    <string name="tab_gateway">درگاه</string>
+    <string name="tab_serial_generation">تولید سریال</string>
+    <string name="tab_messages">تنظیمات پیام های ارسالی</string>
+    <string name="tab_rubika">روبیکا</string>
+    <string name="tab_telegram">تلگرام</string>
+    <string name="tab_settings">تنظیمات</string>
+
+    <string name="rubika_setup_title">اتصال ربات روبیکا</string>
+    <string name="rubika_setup_hint">توکن ربات را وارد کنید و دکمه اتصال را بزنید. پس از تأیید، ربات فعال می‌ماند.</string>
+    <string name="rubika_token_hint">توکن ربات</string>
+    <string name="rubika_connect">اتصال</string>
+    <string name="rubika_connect_error">اتصال به ربات ناموفق بود</string>
+    <string name="rubika_connected">ربات متصل است</string>
+    <string name="rubika_inactive">ربات غیرفعال</string>
+    <string name="rubika_disconnect">قطع اتصال</string>
+    <string name="rubika_chats_title">پیام‌های دریافتی</string>
+    <string name="rubika_polling">در حال دریافت</string>
+    <string name="rubika_no_messages">هنوز پیامی دریافت نشده</string>
+    <string name="rubika_sender_phone">شماره: %1$s</string>
+    <string name="rubika_phone_request_message">لطفاً برای ادامه، شماره تماس خود را با دکمه زیر به اشتراک بگذارید.</string>
+    <string name="rubika_phone_request_button">ارسال شماره تماس</string>
+    <string name="rubika_phone_reminder_message">برای ادامه، لطفاً شماره تماس خود را با دکمه زیر ارسال کنید.</string>
+
+    <string name="telegram_setup_title">اتصال ربات تلگرام</string>
+    <string name="telegram_setup_hint">توکن ربات را از BotFather وارد کنید و دکمه اتصال را بزنید.</string>
+    <string name="telegram_token_hint">توکن ربات</string>
+    <string name="telegram_connect">اتصال</string>
+    <string name="telegram_connect_error">اتصال به ربات ناموفق بود</string>
+    <string name="telegram_connected">ربات متصل است</string>
+    <string name="telegram_inactive">ربات غیرفعال</string>
+    <string name="telegram_disconnect">قطع اتصال</string>
+    <string name="telegram_chats_title">پیام‌های دریافتی</string>
+    <string name="telegram_polling">در حال دریافت</string>
+    <string name="telegram_no_messages">هنوز پیامی دریافت نشده</string>
+    <string name="telegram_sender_phone">شماره: %1$s</string>
+    <string name="telegram_phone_request_message">لطفاً برای ادامه، شماره تماس خود را با دکمه زیر به اشتراک بگذارید.</string>
+    <string name="telegram_phone_request_button">ارسال شماره تماس</string>
+    <string name="telegram_phone_reminder_message">برای ادامه، لطفاً شماره تماس خود را با دکمه زیر ارسال کنید.</string>
+
+    <string name="messages_screen_hint">متن پیامک‌های ارسالی به مشتری را ویرایش کنید. برای مقادیر پویا از @1، @2 و … استفاده کنید.</string>
+    <string name="messages_save">ذخیره پیام‌ها</string>
+    <string name="messages_reset_all">بازنشانی همه</string>
+    <string name="messages_reset_one">بازنشانی این پیام</string>
+    <string name="messages_saved">پیام‌ها ذخیره شد.</string>
+    <string name="messages_reset">به پیش‌فرض بازگردانده شد.</string>
+    <string name="messages_preview">پیش‌نمایش: %1$s</string>
+
+    <string name="settings_verification_title">منبع تأیید سریال</string>
+    <string name="settings_verification_hint">انتخاب کنید سریال‌ها از سرور راه‌دور یا پایگاه داده داخلی بررسی شوند.</string>
+    <string name="settings_mode_remote">سرور راه‌دور</string>
+    <string name="settings_mode_remote_hint">ارسال پیامک به سرور آنلاین برای تأیید سریال</string>
+    <string name="settings_mode_internal">پایگاه داده داخلی</string>
+    <string name="settings_mode_internal_hint">تأیید سریال از پایگاه داده ذخیره‌شده روی دستگاه</string>
+    <string name="settings_internal_date_hint">هنگام ثبت سریال، تاریخ و ساعت به تقویم شمسی (جلالی) ذخیره می‌شود.</string>
+
+    <string name="serial_generation_title">تولید سریال</string>
+    <string name="serial_generation_hint">پیشوند و بازه عددی را وارد کنید. مثال: M از 100 تا 900000</string>
+    <string name="serial_prefix_label">پیشوند (حرف)</string>
+    <string name="serial_start_label">شماره شروع</string>
+    <string name="serial_end_label">شماره پایان</string>
+    <string name="serial_pad_label">عرض صفر (0 = بدون صفر)</string>
+    <string name="serial_preview_count">تعداد سریال: %1$d</string>
+    <string name="serial_preview_invalid">بازه نامعتبر است</string>
+    <string name="serial_generate_button">تولید سریال‌ها</string>
+    <string name="serial_generation_result">ثبت شد: %1$d • تکراری: %2$d • کل: %3$d</string>
+    <string name="serial_generation_confirm_title">تأیید تولید</string>
+    <string name="serial_generation_confirm_message">آیا از تولید %1$d سریال مطمئن هستید؟</string>
+    <string name="serial_generation_confirm_yes">بله، تولید کن</string>
+    <string name="serial_generation_confirm_no">انصراف</string>
+    <string name="serial_db_stats">آمار پایگاه داده</string>
+    <string name="serial_db_total">کل سریال‌ها: %1$d</string>
+    <string name="serial_db_unused">سریال‌های استفاده‌نشده: %1$d</string>
+    <string name="serial_group_description_label">توضیحات گروه (اختیاری)</string>
+    <string name="serial_group_score_label">امتیاز قرعه‌کشی</string>
+    <string name="serial_groups_title">گروه‌های تولید شده</string>
+    <string name="serial_groups_empty">هنوز گروهی ثبت نشده است</string>
+    <string name="serial_group_score">امتیاز: %1$d</string>
+    <string name="serial_group_total">کل: %1$d</string>
+    <string name="serial_group_used">استفاده‌شده: %1$d</string>
+    <string name="serial_group_unused">استفاده‌نشده: %1$d</string>
+    <string name="serial_group_sale_percentage">درصد فروش: %1$s%%</string>
+    <string name="serial_group_delete_button">حذف گروه</string>
+    <string name="serial_group_delete_title">حذف گروه سریال</string>
+    <string name="serial_group_delete_message">آیا از حذف گروه «%1$s» مطمئن هستید؟ تمام %2$d سریال این گروه (شامل %3$d مورد ثبت‌شده) برای همیشه از پایگاه داده حذف می‌شوند.</string>
+    <string name="serial_group_delete_yes">بله، حذف کن</string>
+    <string name="serial_group_delete_no">انصراف</string>
+    <string name="serial_group_created_at">ایجاد: %1$s</string>
+    <string name="serial_group_no_description">بدون توضیحات</string>
+    <string name="serial_group_edit_button">ویرایش</string>
+    <string name="serial_group_save_metadata">ذخیره توضیحات و امتیاز</string>
+    <string name="serial_group_saving">در حال ذخیره...</string>
+    <string name="serial_group_extend_title">توسعه بازه</string>
+    <string name="serial_group_current_range">بازه فعلی: %1$d تا %2$d</string>
+    <string name="serial_group_extend_by_count">افزودن تعداد</string>
+    <string name="serial_group_extend_by_target">تعیین مرز</string>
+    <string name="serial_group_add_below">افزودن به پایین</string>
+    <string name="serial_group_add_above">افزودن به بالا</string>
+    <string name="serial_group_new_start">شماره شروع جدید (≤ %1$d)</string>
+    <string name="serial_group_new_end">شماره پایان جدید (≥ %1$d)</string>
+    <string name="serial_group_extend_button">توسعه بازه</string>
+    <string name="serial_group_extending">در حال توسعه...</string>
+    <string name="serial_group_close_edit">بستن</string>
+
+    <string name="duplicate_serial_title">هشدار سریال تکراری</string>
+    <string name="duplicate_serial_summary">تولید انجام نشد — %1$d سریال تکراری یافت شد.</string>
+    <string name="duplicate_serial_range_line">%1$s (%2$d مورد)</string>
+    <string name="duplicate_serial_confirm">تأیید</string>
+
+    <string name="settings_lan_title">CRM شبکه محلی (هات‌اسپات)</string>
+    <string name="settings_lan_hint">هات‌اسپات گوشی را روشن کنید. رایانه با مرورگر به آدرس زیر متصل شود. نیاز به نصب برنامه روی رایانه نیست.</string>
+    <string name="settings_lan_enable">فعال‌سازی CRM شبکه محلی</string>
+    <string name="settings_lan_url">آدرس CRM: %1$s</string>
+    <string name="settings_lan_pin">رمز PIN: %1$s</string>
+    <string name="settings_lan_port">پورت: %1$d</string>
+    <string name="settings_lan_internal_required">برای CRM محلی، منبع تأیید روی «پایگاه داده داخلی» تنظیم می‌شود.</string>
+    <string name="settings_lan_service_required">برای دسترسی CRM، ابتدا درگاه را روشن کنید.</string>
+    <string name="notification_text_lan">CRM: %1$s</string>
+
+    <string name="settings_lan_trace_title">گزارش ردیابی LAN CRM</string>
+    <string name="settings_lan_trace_hint">هر درخواست HTTP از مرورگر اینجا ثبت می‌شود. اگر مرورگر چیزی نشان نمی‌دهد ولی ping جواب می‌دهد، این بخش را بررسی کنید.</string>
+    <string name="settings_lan_server_running">وضعیت سرور: %1$s</string>
+    <string name="settings_lan_server_yes">در حال اجرا</string>
+    <string name="settings_lan_server_no">متوقف</string>
+    <string name="settings_lan_trace_empty">هنوز رویدادی ثبت نشده</string>
+    <string name="settings_lan_trace_copy">کپی گزارش</string>
+    <string name="settings_lan_trace_clear">پاک کردن</string>
+    <string name="settings_lan_trace_refresh">بروزرسانی</string>
+    <string name="settings_lan_test_hint">از PC: curl http://IP:8765/api/ping — ping کافی نیست</string>
+    <string name="settings_lan_hotspot_hint">اگر PC وصل نمی‌شود: هات‌اسپات را روی PC روشن کنید و گوشی به Wi-Fi PC وصل شود.</string>
+    <string name="settings_lan_qr_hint">QR را با دوربین لپ‌تاپ یا اپ QR اسکن کنید تا CRM در مرورگر باز شود.</string>
+    <string name="settings_lan_qr_waiting">در انتظار راه‌اندازی سرور CRM… درگاه را روشن کنید.</string>
+    <string name="settings_lan_auto_ip">IP خودکار: %1$s</string>
+    <string name="settings_lan_host_override_hint">اگر 192.168.43.1 کار نمی‌کند، IP یا آدرس کامل CRM را وارد کنید (مثلاً 28.144.123.105 یا http://IP:8765)</string>
+    <string name="settings_lan_host_override_label">آدرس/IP سفارشی CRM</string>
+    <string name="settings_lan_host_override_save">ذخیره آدرس CRM</string>
+    <string name="settings_lan_host_override_reset">بازگشت به تشخیص خودکار</string>
+    <string name="settings_lan_host_override_saved">آدرس CRM ذخیره شد</string>
+    <string name="settings_lan_host_override_invalid">آدرس نامعتبر است</string>
+    <string name="settings_lan_host_override_active">آدرس سفارشی فعال است</string>
+    <string name="settings_app_version">نسخه %1$s</string>
+
+    <string name="settings_sms_processing_title">پردازش پیامک ورودی</string>
+    <string name="settings_sms_processing_hint">نحوه دریافت سریال، شهر و کیلومتر از مشتری را تنظیم کنید.</string>
+    <string name="settings_sms_mode_serial_only">حالت ۱: فقط سریال</string>
+    <string name="settings_sms_mode_serial_only_hint">کل پیامک به عنوان شماره سریال بررسی می‌شود.</string>
+    <string name="settings_sms_mode_combined">حالت ۲: ترکیبی (یک پیامک)</string>
+    <string name="settings_sms_mode_combined_hint">ترتیب ارسال مهم نیست. عدد = کیلومتر، متن = شهر، سریال باید در پایگاه موجود باشد.</string>
+    <string name="settings_sms_mode_combined_example">مثال: M100 تبریز 3350</string>
+    <string name="settings_sms_mode_step">حالت ۳: مرحله‌ای</string>
+    <string name="settings_sms_mode_step_hint">ابتدا سریال، سپس سایر اطلاعات در پیام‌های بعدی.</string>
+    <string name="settings_sms_step_order_title">ترتیب مراحل</string>
+    <string name="settings_sms_step_order_hint">ترتیب پرسش پس از سریال. برای تغییر، نگه دارید و بکشید یا از دکمه‌های بالا/پایین استفاده کنید.</string>
+    <string name="settings_sms_step_combined_example">مثال پیام دوم: تبریز 3350 — عدد کیلومتر و نام شهر به‌صورت خودکار تشخیص داده می‌شود.</string>
+    <string name="settings_sms_step_flow_title">نوع جریان مرحله‌ای</string>
+    <string name="settings_sms_step_flow_sequential">پرسش جداگانه</string>
+    <string name="settings_sms_step_flow_sequential_hint">پس از سریال، هر فیلد در یک پیام جدا پرسیده می‌شود.</string>
+    <string name="settings_sms_step_flow_combined">ترکیبی در پیام دوم</string>
+    <string name="settings_sms_step_flow_combined_hint">پس از سریال، شهر و کیلومتر در یک پیام ارسال می‌شوند. عدد = کیلومتر، متن = شهر (بدون جداکننده).</string>
+    <string name="settings_sms_session_timeout">زمان انقضای گفتگو (دقیقه)</string>
+    <string name="settings_sms_save">ذخیره تنظیمات</string>
+    <string name="settings_sms_drag_hint">نگه دارید و بکشید</string>
+    <string name="settings_sms_move_up">انتقال به بالا</string>
+    <string name="settings_sms_move_down">انتقال به پایین</string>
+</resources>

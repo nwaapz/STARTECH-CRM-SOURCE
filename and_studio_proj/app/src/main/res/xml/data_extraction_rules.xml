@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="sharedpref" path="gateway_settings.xml" />
+        <include domain="database" path="gateway_db.sqlite" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="sharedpref" path="gateway_settings.xml" />
+        <include domain="database" path="gateway_db.sqlite" />
+    </device-transfer>
+</data-extraction-rules>

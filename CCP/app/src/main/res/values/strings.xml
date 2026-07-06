@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">Data Call</string>
+    <string name="channel_transfer_name">Data Transfer</string>
+    <string name="channel_transfer_desc">Active image transfer over phone call</string>
+    <string name="notification_transfer_title">Data transfer active</string>
+    <string name="notification_listening_title">Listening for data calls</string>
+    <string name="notification_listening_text">Any incoming call will be treated as a data transfer</string>
+    <string name="notification_incoming_title">Incoming data call</string>
+    <string name="notification_incoming_text">Answer to receive image data</string>
+</resources>

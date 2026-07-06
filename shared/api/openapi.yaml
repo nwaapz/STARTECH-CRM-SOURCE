@@ -1,0 +1,1414 @@
+openapi: 3.0.3
+info:
+  title: Gateway LAN CRM API
+  version: 1.0.0
+  description: HTTP API served from the Android SMS gateway over hotspot LAN.
+
+paths:
+  /api/health:
+    get:
+      summary: Health check (no auth)
+      responses:
+        "200":
+          description: Server is running
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /api/sync:
+    get:
+      summary: Poll for stats and change events
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: since
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            default: 0
+      responses:
+        "200":
+          description: Sync payload
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SyncResponse"
+        "401":
+          description: Invalid PIN
+
+  /api/serials/batch:
+    post:
+      summary: Bulk-create serial numbers
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BatchRequest"
+      responses:
+        "200":
+          description: Batch result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+        "409":
+          description: Duplicate serials in requested range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DuplicateSerialError"
+
+  /api/serial-groups:
+    get:
+      summary: List serial generation groups with usage stats
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Serial group list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SerialGroupListResponse"
+        "401":
+          description: Invalid PIN
+
+  /api/serial-groups/{id}:
+    put:
+      summary: Update serial group description and score
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSerialGroupRequest"
+      responses:
+        "200":
+          description: Updated group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SerialGroup"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Group not found
+    delete:
+      summary: Delete a serial group and all its serials
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "204":
+          description: Group deleted
+        "400":
+          description: Invalid group id
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Group not found
+
+  /api/serial-groups/{id}/extend:
+    post:
+      summary: Extend a serial group range upward and/or downward
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExtendSerialGroupRangeRequest"
+      responses:
+        "200":
+          description: Range extended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtendSerialGroupRangeResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Group not found
+        "409":
+          description: Duplicate serials in extension range
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DuplicateSerialError"
+
+  /api/serials:
+    get:
+      summary: List serials with filters
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: registered
+          in: query
+          schema:
+            type: boolean
+        - name: from
+          in: query
+          schema:
+            type: string
+            description: Jalali datetime lower bound (e.g. 1404/03/01)
+        - name: to
+          in: query
+          schema:
+            type: string
+            description: Jalali datetime upper bound
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Paginated serial list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SerialListResponse"
+        "401":
+          description: Invalid PIN
+
+  /api/communications:
+    get:
+      summary: Paginated SMS communication log
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+        - name: direction
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [incoming, outgoing]
+          description: Filter by message direction (omit for all)
+        - name: phone
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Partial phone prefix search (e.g. 0913)
+      responses:
+        "200":
+          description: Paginated message list (newest first)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommunicationListResponse"
+        "401":
+          description: Invalid PIN
+
+  /api/communications/thread:
+    get:
+      summary: Messages for one phone number (oldest-first batch)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: phone
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: before
+          in: query
+          required: false
+          schema:
+            type: integer
+            format: int64
+            description: Load messages older than this timestamp
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Thread batch
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommunicationThreadResponse"
+        "400":
+          description: Missing phone
+        "401":
+          description: Invalid PIN
+
+  /api/settings/sms-processing:
+    get:
+      summary: Get SMS processing settings
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: SMS processing configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsProcessingSettings"
+        "401":
+          description: Invalid PIN
+    put:
+      summary: Update SMS processing settings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmsProcessingSettings"
+      responses:
+        "200":
+          description: Updated configuration
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsProcessingSettings"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
+  /api/settings/sms-messages:
+    get:
+      summary: Get customer SMS message templates
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Message template catalog with current text
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsMessagesSettings"
+        "401":
+          description: Invalid PIN
+    put:
+      summary: Update customer SMS message templates
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SmsMessagesSettings"
+      responses:
+        "200":
+          description: Updated message templates
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SmsMessagesSettings"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
+  /api/rubika/status:
+    get:
+      summary: Get Rubika bot connection status
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RubikaStatus"
+        "401":
+          description: Invalid PIN
+
+  /api/rubika/connect:
+    post:
+      summary: Connect and verify Rubika bot token
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RubikaConnectRequest"
+      responses:
+        "200":
+          description: Connected bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RubikaStatus"
+        "400":
+          description: Invalid token or connect failed
+        "401":
+          description: Invalid PIN
+
+  /api/rubika/disconnect:
+    post:
+      summary: Disconnect Rubika bot
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Disconnected bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RubikaStatus"
+        "401":
+          description: Invalid PIN
+
+  /api/rubika/messages:
+    get:
+      summary: List Rubika messages
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: integer
+            format: int64
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 200
+      responses:
+        "200":
+          description: Rubika message list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RubikaMessageListResponse"
+        "401":
+          description: Invalid PIN
+
+  /api/settings/rubika:
+    get:
+      summary: Get Rubika serial processing settings
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Rubika settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RubikaSettings"
+        "401":
+          description: Invalid PIN
+    put:
+      summary: Update Rubika serial processing settings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RubikaSettings"
+      responses:
+        "200":
+          description: Updated Rubika settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RubikaSettings"
+        "401":
+          description: Invalid PIN
+
+  /api/telegram/status:
+    get:
+      summary: Get Telegram bot connection status
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelegramStatus"
+        "401":
+          description: Invalid PIN
+
+  /api/telegram/connect:
+    post:
+      summary: Connect and verify Telegram bot token
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TelegramConnectRequest"
+      responses:
+        "200":
+          description: Connected bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelegramStatus"
+        "400":
+          description: Invalid token or connect failed
+        "401":
+          description: Invalid PIN
+
+  /api/telegram/disconnect:
+    post:
+      summary: Disconnect Telegram bot
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Disconnected bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelegramStatus"
+        "401":
+          description: Invalid PIN
+
+  /api/telegram/messages:
+    get:
+      summary: List Telegram messages
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: integer
+            format: int64
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 200
+      responses:
+        "200":
+          description: Telegram message list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelegramMessageListResponse"
+        "401":
+          description: Invalid PIN
+
+  /api/settings/telegram:
+    get:
+      summary: Get Telegram serial processing settings
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Telegram settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelegramSettings"
+        "401":
+          description: Invalid PIN
+    put:
+      summary: Update Telegram serial processing settings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TelegramSettings"
+      responses:
+        "200":
+          description: Updated Telegram settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TelegramSettings"
+        "401":
+          description: Invalid PIN
+
+  /api/mass-sms/provinces:
+    get:
+      summary: List Iran provinces and cities for mass SMS filters
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Province list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IranProvinceListResponse"
+        "401":
+          description: Invalid PIN
+
+  /api/mass-sms/preview:
+    post:
+      summary: Preview mass SMS recipient count
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MassSmsPreviewRequest"
+      responses:
+        "200":
+          description: Preview result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MassSmsPreviewResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
+  /api/mass-sms/campaigns:
+    get:
+      summary: List mass SMS campaigns
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Campaign list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MassSmsCampaignListResponse"
+        "401":
+          description: Invalid PIN
+    post:
+      summary: Create a mass SMS campaign
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MassSmsCreateRequest"
+      responses:
+        "200":
+          description: Created campaign
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MassSmsCampaign"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
+  /api/mass-sms/campaigns/{id}:
+    get:
+      summary: Get mass SMS campaign detail with recipients
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+      responses:
+        "200":
+          description: Campaign detail
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MassSmsCampaignDetailResponse"
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Campaign not found
+    delete:
+      summary: Delete a mass SMS campaign
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Campaign not found
+
+  /api/mass-sms/campaigns/{id}/pause:
+    post:
+      summary: Pause a running mass SMS campaign
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Paused campaign
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MassSmsCampaign"
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Campaign not found
+
+  /api/mass-sms/campaigns/{id}/resume:
+    post:
+      summary: Resume a paused mass SMS campaign
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Resumed campaign
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MassSmsCampaign"
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Campaign not found
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+
+  schemas:
+    HealthResponse:
+      type: object
+      properties:
+        ok:
+          type: boolean
+        version:
+          type: string
+        serverTime:
+          type: integer
+          format: int64
+
+    Stats:
+      type: object
+      properties:
+        total:
+          type: integer
+        unused:
+          type: integer
+        registered:
+          type: integer
+
+    SyncChange:
+      type: object
+      properties:
+        type:
+          type: string
+          enum: [registered, serials_added]
+        serial:
+          type: string
+        phone:
+          type: string
+        date:
+          type: string
+        city:
+          type: string
+        km:
+          type: integer
+        inserted:
+          type: integer
+        skipped:
+          type: integer
+        total:
+          type: integer
+        at:
+          type: integer
+          format: int64
+
+    SyncResponse:
+      type: object
+      properties:
+        serverTime:
+          type: integer
+          format: int64
+        cursor:
+          type: integer
+          format: int64
+        stats:
+          $ref: "#/components/schemas/Stats"
+        changes:
+          type: array
+          items:
+            $ref: "#/components/schemas/SyncChange"
+
+    BatchRequest:
+      type: object
+      required: [prefix, start, end]
+      properties:
+        prefix:
+          type: string
+          description: Letter/digit prefix; case-insensitive (stored uppercase)
+        start:
+          type: integer
+        end:
+          type: integer
+        padWidth:
+          type: integer
+          default: 0
+        city:
+          type: string
+        km:
+          type: integer
+        description:
+          type: string
+        score:
+          type: integer
+          default: 1
+          minimum: 1
+          description: Lottery weight for this product group
+
+    BatchResponse:
+      type: object
+      properties:
+        inserted:
+          type: integer
+        skipped:
+          type: integer
+        total:
+          type: integer
+        groupId:
+          type: integer
+          format: int64
+          nullable: true
+
+    SerialGroup:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        prefix:
+          type: string
+        startNumber:
+          type: integer
+        endNumber:
+          type: integer
+        padWidth:
+          type: integer
+        rangeLabel:
+          type: string
+        description:
+          type: string
+          nullable: true
+        score:
+          type: integer
+        total:
+          type: integer
+        used:
+          type: integer
+        unused:
+          type: integer
+        salePercentage:
+          type: number
+          format: double
+        createdAt:
+          type: integer
+          format: int64
+
+    SerialGroupListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SerialGroup"
+
+    UpdateSerialGroupRequest:
+      type: object
+      properties:
+        description:
+          type: string
+          nullable: true
+        score:
+          type: integer
+          minimum: 1
+
+    ExtendSerialGroupRangeRequest:
+      type: object
+      properties:
+        addBelow:
+          type: integer
+          minimum: 1
+          description: Add this many serial numbers below the current start
+        addAbove:
+          type: integer
+          minimum: 1
+          description: Add this many serial numbers above the current end
+        newStart:
+          type: integer
+          minimum: 0
+          description: Extend start down to this number (must be <= current start)
+        newEnd:
+          type: integer
+          minimum: 0
+          description: Extend end up to this number (must be >= current end)
+
+    ExtendSerialGroupRangeResponse:
+      type: object
+      properties:
+        inserted:
+          type: integer
+        skipped:
+          type: integer
+        startNumber:
+          type: integer
+        endNumber:
+          type: integer
+        group:
+          $ref: "#/components/schemas/SerialGroup"
+
+    DuplicateRangeItem:
+      type: object
+      properties:
+        rangeLabel:
+          type: string
+        count:
+          type: integer
+
+    DuplicateSerialError:
+      type: object
+      properties:
+        error:
+          type: string
+        duplicateCount:
+          type: integer
+        duplicateRanges:
+          type: array
+          items:
+            $ref: "#/components/schemas/DuplicateRangeItem"
+
+    SerialRow:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        serial:
+          type: string
+        phone:
+          type: string
+        date:
+          type: string
+        city:
+          type: string
+        km:
+          type: integer
+        needsCompletion:
+          type: boolean
+        completionReminderSent:
+          type: boolean
+        completionReminderSentAt:
+          type: integer
+          format: int64
+          nullable: true
+
+    SerialListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/SerialRow"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+    SmsProcessingSettings:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [SERIAL_ONLY, COMBINED_PATTERN, STEP_BY_STEP]
+        separator:
+          type: string
+        combinedPattern:
+          type: array
+          items:
+            type: string
+            enum: [SERIAL, CITY, KM]
+        stepFieldOrder:
+          type: array
+          items:
+            type: string
+            enum: [SERIAL, CITY, KM]
+        stepFlowType:
+          type: string
+          enum: [SEQUENTIAL, COMBINED_SECOND]
+        sessionTimeoutMinutes:
+          type: integer
+
+    SmsMessagePlaceholderHint:
+      type: object
+      properties:
+        token:
+          type: string
+        labelFa:
+          type: string
+
+    SmsMessageDefinition:
+      type: object
+      properties:
+        id:
+          type: string
+        categoryFa:
+          type: string
+        titleFa:
+          type: string
+        descriptionFa:
+          type: string
+        placeholders:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmsMessagePlaceholderHint"
+        template:
+          type: string
+
+    SmsMessagesSettings:
+      type: object
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: "#/components/schemas/SmsMessageDefinition"
+
+    CommunicationMessage:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        phone:
+          type: string
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+        body:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        status:
+          type: string
+          nullable: true
+        simLabel:
+          type: string
+          nullable: true
+
+    CommunicationListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommunicationMessage"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+    CommunicationThreadResponse:
+      type: object
+      properties:
+        phone:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommunicationMessage"
+        hasMore:
+          type: boolean
+
+    IranProvince:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        cities:
+          type: array
+          items:
+            type: string
+
+    IranProvinceListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/IranProvince"
+
+    MassSmsPreviewRequest:
+      type: object
+      required: [audienceType]
+      properties:
+        audienceType:
+          type: string
+          enum: [registered, error, all]
+        provinceId:
+          type: string
+          nullable: true
+        cityName:
+          type: string
+          nullable: true
+
+    MassSmsPreviewResponse:
+      type: object
+      properties:
+        count:
+          type: integer
+        samplePhones:
+          type: array
+          items:
+            type: string
+
+    MassSmsCreateRequest:
+      type: object
+      required: [message, audienceType]
+      properties:
+        message:
+          type: string
+        delaySeconds:
+          type: integer
+          default: 10
+        audienceType:
+          type: string
+          enum: [registered, error, all]
+        provinceId:
+          type: string
+          nullable: true
+        cityName:
+          type: string
+          nullable: true
+
+    MassSmsCampaign:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        message:
+          type: string
+        delaySeconds:
+          type: integer
+        audienceType:
+          type: string
+        provinceId:
+          type: string
+          nullable: true
+        provinceName:
+          type: string
+          nullable: true
+        cityName:
+          type: string
+          nullable: true
+        status:
+          type: string
+          enum: [queued, running, paused, completed, cancelled]
+        totalCount:
+          type: integer
+        sentCount:
+          type: integer
+        failedCount:
+          type: integer
+        pendingCount:
+          type: integer
+        createdAt:
+          type: integer
+          format: int64
+        startedAt:
+          type: integer
+          format: int64
+          nullable: true
+        completedAt:
+          type: integer
+          format: int64
+          nullable: true
+        queueOrder:
+          type: integer
+          format: int64
+        queuePosition:
+          type: integer
+          nullable: true
+
+    MassSmsCampaignListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/MassSmsCampaign"
+
+    MassSmsRecipient:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        phone:
+          type: string
+        status:
+          type: string
+          enum: [pending, sent, failed]
+        sentAt:
+          type: integer
+          format: int64
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+
+    MassSmsCampaignDetailResponse:
+      type: object
+      properties:
+        campaign:
+          $ref: "#/components/schemas/MassSmsCampaign"
+        recipients:
+          type: array
+          items:
+            $ref: "#/components/schemas/MassSmsRecipient"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+    RubikaConnectRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+
+    RubikaStatus:
+      type: object
+      properties:
+        active:
+          type: boolean
+        botTitle:
+          type: string
+          nullable: true
+        botUsername:
+          type: string
+          nullable: true
+        serialEnabled:
+          type: boolean
+        polling:
+          type: boolean
+
+    RubikaMessage:
+      type: object
+      properties:
+        messageId:
+          type: string
+        chatId:
+          type: string
+        senderId:
+          type: string
+          nullable: true
+        text:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+        phoneNumber:
+          type: string
+          nullable: true
+        senderName:
+          type: string
+          nullable: true
+
+    RubikaMessageListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RubikaMessage"
+        total:
+          type: integer
+
+    RubikaSettings:
+      type: object
+      properties:
+        serialEnabled:
+          type: boolean
+
+    TelegramConnectRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+
+    TelegramStatus:
+      type: object
+      properties:
+        active:
+          type: boolean
+        botTitle:
+          type: string
+          nullable: true
+        botUsername:
+          type: string
+          nullable: true
+        serialEnabled:
+          type: boolean
+        polling:
+          type: boolean
+
+    TelegramMessage:
+      type: object
+      properties:
+        messageId:
+          type: string
+        chatId:
+          type: string
+        senderId:
+          type: string
+          nullable: true
+        text:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+        phoneNumber:
+          type: string
+          nullable: true
+        senderName:
+          type: string
+          nullable: true
+
+    TelegramMessageListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/TelegramMessage"
+        total:
+          type: integer
+
+    TelegramSettings:
+      type: object
+      properties:
+        serialEnabled:
+          type: boolean
