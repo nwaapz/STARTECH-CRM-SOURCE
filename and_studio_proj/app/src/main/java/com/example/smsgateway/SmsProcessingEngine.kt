@@ -3,6 +3,7 @@ package com.example.smsgateway
 import com.example.smsgateway.data.GatewayDatabase
 import com.example.smsgateway.data.SerialEntity
 import com.example.smsgateway.data.SmsSessionEntity
+import com.example.smsgateway.lan.LanTraceLog
 import android.telephony.SubscriptionManager
 import kotlinx.coroutines.runBlocking
 
@@ -20,6 +21,7 @@ class SmsProcessingEngine(
         sender: String,
         message: String,
         subscriptionId: Int = SubscriptionManager.INVALID_SUBSCRIPTION_ID,
+        registrationSource: String = RegistrationSource.SMS,
     ): GatewayApi.GatewayResponse {
         val config = settingsStore.getSmsProcessingConfig()
         val normalizedPhone = PhoneUtils.formatForDisplay(sender.trim()) ?: sender.trim()
@@ -27,13 +29,57 @@ class SmsProcessingEngine(
         if (body.isEmpty()) {
             return response(replyInvalid())
         }
+        val source = RegistrationSource.normalizeOrDefault(registrationSource)
 
         return runBlocking {
-            when (config.mode) {
-                SmsProcessingMode.SERIAL_ONLY -> processSerialOnly(normalizedPhone, body, subscriptionId)
-                SmsProcessingMode.COMBINED_PATTERN -> processCombined(normalizedPhone, body, config, subscriptionId)
-                SmsProcessingMode.STEP_BY_STEP -> processStepByStep(normalizedPhone, body, config, subscriptionId)
+            val resolvedSubscriptionId = resolveOutboundSubscriptionId(
+                phone = normalizedPhone,
+                inboundSubscriptionId = subscriptionId,
+                config = config,
+            )
+            val result = when (config.mode) {
+                SmsProcessingMode.SERIAL_ONLY ->
+                    processSerialOnly(normalizedPhone, body, resolvedSubscriptionId, source)
+                SmsProcessingMode.COMBINED_PATTERN ->
+                    processCombined(normalizedPhone, body, config, resolvedSubscriptionId, source)
+                SmsProcessingMode.STEP_BY_STEP ->
+                    processStepByStep(normalizedPhone, body, config, resolvedSubscriptionId, source)
             }
+            if (result.replySubscriptionId != null) {
+                result
+            } else {
+                result.copy(replySubscriptionId = resolvedSubscriptionId)
+            }
+        }
+    }
+
+    private suspend fun resolveOutboundSubscriptionId(
+        phone: String,
+        inboundSubscriptionId: Int,
+        config: SmsProcessingConfig,
+    ): Int {
+        val sticky = findStickySubscriptionId(phone, config)
+        if (sticky != null) {
+            return sticky
+        }
+        val budget = SimQuotaRouter.estimateConversationBudget(appContext)
+        return SimQuotaRouter.pickForBudget(appContext, inboundSubscriptionId, budget)
+            ?: inboundSubscriptionId
+    }
+
+    private suspend fun findStickySubscriptionId(
+        phone: String,
+        config: SmsProcessingConfig,
+    ): Int? {
+        val session = sessionStore.findValidSession(phone, config.sessionTimeoutMinutes)
+        session?.subscriptionId?.let { return it }
+
+        val incomplete = database.serialDao().findIncompleteByPhone(phone) ?: return null
+        val regSub = incomplete.registrationSubscriptionId
+        return if (regSub != null && regSub != SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+            regSub
+        } else {
+            null
         }
     }
 
@@ -41,6 +87,7 @@ class SmsProcessingEngine(
         phone: String,
         serial: String,
         subscriptionId: Int,
+        registrationSource: String,
     ): GatewayApi.GatewayResponse {
         return registerIfValid(
             phone = phone,
@@ -49,6 +96,7 @@ class SmsProcessingEngine(
             km = null,
             useFields = false,
             subscriptionId = subscriptionId,
+            registrationSource = registrationSource,
         )
     }
 
@@ -57,10 +105,11 @@ class SmsProcessingEngine(
         body: String,
         config: SmsProcessingConfig,
         subscriptionId: Int,
+        registrationSource: String,
     ): GatewayApi.GatewayResponse {
         tryCompleteIncompleteRegistration(phone, body, config)?.let { return it }
 
-        tryRegisterPartialSerialOnly(phone, body, config, subscriptionId)?.let { return it }
+        tryRegisterPartialSerialOnly(phone, body, config, subscriptionId, registrationSource)?.let { return it }
 
         val result = SmsPatternParser.parseCombinedFlexible(
             message = body,
@@ -77,6 +126,7 @@ class SmsProcessingEngine(
                 km = parsed.km,
                 useFields = true,
                 subscriptionId = subscriptionId,
+                registrationSource = registrationSource,
             )
         }
 
@@ -96,6 +146,7 @@ class SmsProcessingEngine(
         body: String,
         config: SmsProcessingConfig,
         subscriptionId: Int,
+        registrationSource: String,
     ): GatewayApi.GatewayResponse {
         if (sessionStore.isSessionExpired(phone, config.sessionTimeoutMinutes)) {
             sessionStore.clearSession(phone)
@@ -109,14 +160,14 @@ class SmsProcessingEngine(
         if (session != null) {
             if (isUnusedSerial(body)) {
                 sessionStore.clearSession(phone)
-                return startStepSession(phone, body, config, subscriptionId)
+                return startStepSession(phone, body, config, subscriptionId, registrationSource)
             }
             return continueStepSession(phone, body, config, session)
         }
 
         tryCompleteIncompleteRegistration(phone, body, config)?.let { return it }
 
-        return startStepSession(phone, body, config, subscriptionId)
+        return startStepSession(phone, body, config, subscriptionId, registrationSource)
     }
 
     private suspend fun startStepSession(
@@ -124,6 +175,7 @@ class SmsProcessingEngine(
         body: String,
         config: SmsProcessingConfig,
         subscriptionId: Int,
+        registrationSource: String,
     ): GatewayApi.GatewayResponse {
         val serial = SerialNormalizer.normalizeSerial(body)
         if (serial.isEmpty()) return response(replyInvalid())
@@ -132,25 +184,45 @@ class SmsProcessingEngine(
         val row = dao.findBySerial(serial)
             ?: return rejectSerial(phone, serial, SerialRegistrationErrorReason.NOT_FOUND)
 
+        val remaining = config.stepFieldsAfterSerial()
+
         when {
             row.phone.isNullOrBlank() -> {
-                if (!registerPartialSerial(phone, serial, subscriptionId)) {
+                if (remaining.isEmpty()) {
+                    return registerIfValid(
+                        phone, serial, null, null, useFields = false, subscriptionId, registrationSource,
+                    )
+                }
+                if (!registerPartialSerial(phone, serial, subscriptionId, registrationSource)) {
                     return rejectSerial(phone, serial, SerialRegistrationErrorReason.ALREADY_USED)
                 }
             }
             row.phone.trim() == phone.trim() -> {
                 if (!row.needsCompletion()) {
-                    onFullRegistrationSuccess(phone, row.serial)
-                    return response(replyValid())
+                    val firstReg = onFullRegistrationSuccess(phone, row.serial)
+                    val needsPhoto = isImageVerificationRequired(row.serial)
+                    return response(
+                        replyValid(row.serial),
+                        firstRegistration = firstReg,
+                        registrationSucceeded = false,
+                        imageVerificationRequired = needsPhoto,
+                        registeredSerial = row.serial,
+                    )
                 }
             }
             else -> return rejectSerial(phone, serial, SerialRegistrationErrorReason.ALREADY_USED)
         }
 
-        val remaining = config.stepFieldsAfterSerial()
         if (remaining.isEmpty()) {
-            onFullRegistrationSuccess(phone, row.serial)
-            return response(replyValid())
+            val firstReg = onFullRegistrationSuccess(phone, row.serial)
+            val needsPhoto = isImageVerificationRequired(row.serial)
+            return response(
+                replyValid(row.serial),
+                firstRegistration = firstReg,
+                registrationSucceeded = true,
+                imageVerificationRequired = needsPhoto,
+                registeredSerial = row.serial,
+            )
         }
 
         val now = System.currentTimeMillis()
@@ -167,6 +239,9 @@ class SmsProcessingEngine(
                 collectedCity = null,
                 collectedKm = null,
                 updatedAt = now,
+                subscriptionId = subscriptionId.takeIf {
+                    it != SubscriptionManager.INVALID_SUBSCRIPTION_ID
+                },
             ),
         )
 
@@ -250,13 +325,32 @@ class SmsProcessingEngine(
         if (!requiresCityKm(config)) return null
 
         val dao = database.serialDao()
-        val incomplete = dao.findIncompleteByPhone(phone) ?: return null
-
-        if (body.trim().equals(incomplete.serial, ignoreCase = true)) {
-            return response(partialMissingFieldsReply(incomplete))
+        val incompleteRaw = dao.findIncompleteByPhone(phone) ?: return null
+        val incomplete = applyKnownCityAndMaybeComplete(phone, incompleteRaw.serial) ?: incompleteRaw
+        val category = categoryFor(incomplete)
+        val known = knownCityFor(phone)
+        if (!RegistrationFieldRules.needsCompletion(
+                phone,
+                incomplete.city,
+                incomplete.km,
+                category,
+                known,
+            )
+        ) {
+            // Flag cleared by known-city / seller rules; nothing left to collect.
+            return null
         }
 
-        val missingFields = missingFieldsFor(incomplete)
+        if (body.trim().equals(incomplete.serial, ignoreCase = true)) {
+            return response(partialMissingFieldsReply(incomplete, category, known))
+        }
+
+        val missingFields = RegistrationFieldRules.missingFields(
+            incomplete.city,
+            incomplete.km,
+            category,
+            known,
+        ).toSmsFields()
         if (missingFields.isEmpty()) return null
 
         val requiredFields = buildList {
@@ -326,6 +420,7 @@ class SmsProcessingEngine(
         body: String,
         config: SmsProcessingConfig,
         subscriptionId: Int,
+        registrationSource: String,
     ): GatewayApi.GatewayResponse? {
         if (!requiresCityKm(config)) return null
 
@@ -337,9 +432,16 @@ class SmsProcessingEngine(
 
         when {
             row.phone.isNullOrBlank() -> {
-                if (!registerPartialSerial(phone, serial, subscriptionId)) return null
+                if (!registerPartialSerial(phone, serial, subscriptionId, registrationSource)) return null
             }
-            row.phone.trim() == phone.trim() && row.hasMissingRegistrationFields() -> {
+            row.phone.trim() == phone.trim() -> {
+                val category = categoryFor(row)
+                val known = knownCityFor(phone)
+                if (!RegistrationFieldRules.needsCompletion(phone, row.city, row.km, category, known) &&
+                    row.registrationFieldsComplete
+                ) {
+                    return null
+                }
                 database.serialDao().markRegistrationIncomplete(
                     serial,
                     phone,
@@ -349,14 +451,29 @@ class SmsProcessingEngine(
             else -> return null
         }
 
-        val updated = dao.findBySerial(serial) ?: return null
-        return response(partialMissingFieldsReply(updated))
+        val updated = applyKnownCityAndMaybeComplete(phone, serial) ?: return null
+        val category = categoryFor(updated)
+        val known = knownCityFor(phone)
+        if (!RegistrationFieldRules.needsCompletion(phone, updated.city, updated.km, category, known)) {
+            sessionStore.clearSession(phone)
+            val firstReg = onFullRegistrationSuccess(phone, updated.serial)
+            val needsPhoto = isImageVerificationRequired(updated.serial)
+            return response(
+                replyValid(updated.serial),
+                firstRegistration = firstReg,
+                registrationSucceeded = true,
+                imageVerificationRequired = needsPhoto,
+                registeredSerial = updated.serial,
+            )
+        }
+        return response(partialMissingFieldsReply(updated, category, known))
     }
 
     private suspend fun registerPartialSerial(
         phone: String,
         serial: String,
         subscriptionId: Int,
+        registrationSource: String,
     ): Boolean {
         val normalizedSerial = SerialNormalizer.normalizeSerial(serial)
         val dao = database.serialDao()
@@ -371,6 +488,7 @@ class SmsProcessingEngine(
             jalaliDateTime,
             normalizedSerial,
             storedSubscriptionId(subscriptionId),
+            RegistrationSource.normalizeOrDefault(registrationSource),
         )
         if (affected == 1) {
             syncWriter.recordRegistered(
@@ -398,7 +516,30 @@ class SmsProcessingEngine(
             return response(replyInvalid())
         }
 
-        val affected = dao.updateRegistrationFields(phone, normalizedSerial, city, km)
+        val category = categoryFor(row)
+        val known = knownCityFor(phone)
+        val effectiveCity = RegistrationFieldRules.effectiveCity(city, known)
+        val stillMissing = RegistrationFieldRules.missingFields(effectiveCity, km, category, null)
+        if (!stillMissing.isEmpty()) {
+            // Persist whatever we have, keep incomplete, ask for remaining fields.
+            dao.updateRegistrationFields(
+                phone = phone,
+                serial = normalizedSerial,
+                city = effectiveCity,
+                km = km,
+                fieldsComplete = false,
+            )
+            val updated = dao.findBySerial(normalizedSerial) ?: return response(replyInvalid())
+            return response(partialMissingFieldsReply(updated, category, known))
+        }
+
+        val affected = dao.updateRegistrationFields(
+            phone = phone,
+            serial = normalizedSerial,
+            city = effectiveCity,
+            km = km,
+            fieldsComplete = true,
+        )
         if (affected != 1) {
             return response(replyInvalid())
         }
@@ -408,11 +549,18 @@ class SmsProcessingEngine(
             serial = row.serial,
             phone = phone,
             date = row.date ?: JalaliHelper.nowJalaliDateTime(),
-            city = city,
+            city = effectiveCity,
             km = km,
         )
-        onFullRegistrationSuccess(phone, normalizedSerial)
-        return response(replyValid())
+        val firstReg = onFullRegistrationSuccess(phone, normalizedSerial)
+        val needsPhoto = isImageVerificationRequired(normalizedSerial)
+        return response(
+            replyValid(normalizedSerial),
+            firstRegistration = firstReg,
+            registrationSucceeded = true,
+            imageVerificationRequired = needsPhoto,
+            registeredSerial = normalizedSerial,
+        )
     }
 
     private suspend fun registerIfValid(
@@ -422,6 +570,7 @@ class SmsProcessingEngine(
         km: Int?,
         useFields: Boolean,
         subscriptionId: Int,
+        registrationSource: String,
     ): GatewayApi.GatewayResponse {
         val normalizedSerial = SerialNormalizer.normalizeSerial(serial)
         val dao = database.serialDao()
@@ -434,17 +583,34 @@ class SmsProcessingEngine(
         }
 
         val jalaliDateTime = JalaliHelper.nowJalaliDateTime()
+        val source = RegistrationSource.normalizeOrDefault(registrationSource)
+        val category = categoryFor(row)
+        val known = knownCityFor(phone)
+        val effectiveCity = if (useFields) {
+            RegistrationFieldRules.effectiveCity(city, known)
+        } else {
+            city
+        }
+        val requiresKmFlag = if (RegistrationFieldRules.requiresKm(category)) 1 else 0
         val affected = if (useFields) {
             dao.registerSerialWithFields(
                 phone,
                 jalaliDateTime,
                 normalizedSerial,
-                city,
+                effectiveCity,
                 km,
                 storedSubscriptionId(subscriptionId),
+                source,
+                requiresKmFlag,
             )
         } else {
-            dao.registerSerial(phone, jalaliDateTime, normalizedSerial, storedSubscriptionId(subscriptionId))
+            dao.registerSerial(
+                phone,
+                jalaliDateTime,
+                normalizedSerial,
+                storedSubscriptionId(subscriptionId),
+                source,
+            )
         }
 
         if (affected != 1) {
@@ -455,20 +621,92 @@ class SmsProcessingEngine(
             serial = row.serial,
             phone = phone,
             date = jalaliDateTime,
-            city = city,
+            city = effectiveCity,
             km = km,
         )
-        if (useFields && (city.isNullOrBlank() || km == null)) {
-            val updated = dao.findBySerial(normalizedSerial) ?: return response(replyInvalid())
-            return response(partialMissingFieldsReply(updated))
+        if (useFields) {
+            val updated = applyKnownCityAndMaybeComplete(phone, normalizedSerial)
+                ?: return response(replyInvalid())
+            val updatedCategory = categoryFor(updated)
+            val updatedKnown = knownCityFor(phone)
+            if (RegistrationFieldRules.needsCompletion(
+                    phone,
+                    updated.city,
+                    updated.km,
+                    updatedCategory,
+                    updatedKnown,
+                )
+            ) {
+                return response(partialMissingFieldsReply(updated, updatedCategory, updatedKnown))
+            }
+            val firstReg = onFullRegistrationSuccess(phone, normalizedSerial)
+            val needsPhoto = isImageVerificationRequired(normalizedSerial)
+            return response(
+                replyValid(normalizedSerial),
+                firstRegistration = firstReg,
+                registrationSucceeded = true,
+                imageVerificationRequired = needsPhoto,
+                registeredSerial = normalizedSerial,
+            )
         }
-        onFullRegistrationSuccess(phone, normalizedSerial)
-        return response(replyValid())
+        val firstReg = onFullRegistrationSuccess(phone, normalizedSerial)
+        val needsPhoto = isImageVerificationRequired(normalizedSerial)
+        return response(
+            replyValid(normalizedSerial),
+            firstRegistration = firstReg,
+            registrationSucceeded = true,
+            imageVerificationRequired = needsPhoto,
+            registeredSerial = normalizedSerial,
+        )
     }
 
-    private suspend fun onFullRegistrationSuccess(phone: String, serial: String) {
-        val row = database.serialDao().findBySerial(serial) ?: return
+    fun isPhoneRegisteredWithMCode(phone: String): Boolean {
+        val normalized = PhoneUtils.formatForDisplay(phone) ?: return false
+        return runBlocking {
+            database.serialDao().countRegisteredMCode(normalized) > 0
+        }
+    }
+
+    private suspend fun onFullRegistrationSuccess(phone: String, serial: String): Boolean {
+        val row = database.serialDao().findBySerial(serial) ?: return false
         DeviceContactHelper.ensureContact(appContext, phone, row.id)
+        awardClubScoreIfEligible(phone, row)
+        awardReferralForPurchase(phone, row.id)
+        return database.serialDao().countCompletedRegistrationsByPhone(phone) == 1
+    }
+
+    /**
+     * Awards the serial group's club score to the buyer when image verification is not required.
+     * Photo-gated groups award score later in [SerialPhotoVerificationService.approve].
+     */
+    private suspend fun awardClubScoreIfEligible(phone: String, row: SerialEntity) {
+        val groupId = row.groupId ?: return
+        val group = database.serialGroupDao().findById(groupId) ?: return
+        if (group.imageVerificationRequired) return
+        val score = group.score.coerceAtLeast(0)
+        if (score < 1) return
+        try {
+            ReferralService.getInstance(appContext).awardOwnPoints(
+                phone = phone,
+                points = score,
+                sourceType = com.example.smsgateway.data.CustomerScoreSourceType.SERIAL,
+                sourceId = row.id,
+            )
+        } catch (error: Exception) {
+            LanTraceLog.e("SmsProcessingEngine", "Club score award failed for $phone", error)
+        }
+    }
+
+    private suspend fun awardReferralForPurchase(phone: String, serialRowId: Long) {
+        try {
+            ReferralService.getInstance(appContext).onPurchase(
+                buyerPhone = phone,
+                sourceType = com.example.smsgateway.data.CustomerScoreSourceType.SERIAL,
+                sourceId = serialRowId,
+            )
+        } catch (error: Exception) {
+            LanTraceLog.e("SmsProcessingEngine", "Referral award failed for $phone", error)
+        }
     }
 
     private suspend fun isUnusedSerial(body: String): Boolean {
@@ -499,29 +737,80 @@ class SmsProcessingEngine(
         }
     }
 
-    private fun missingFieldsFor(row: SerialEntity): List<SmsField> {
-        val fields = mutableListOf<SmsField>()
-        if (row.city.isNullOrBlank()) fields.add(SmsField.CITY)
-        if (row.km == null) fields.add(SmsField.KM)
-        return fields
+    private suspend fun categoryFor(row: SerialEntity): String {
+        val groupId = row.groupId ?: return SerialGroupCategory.DEFAULT
+        return SerialGroupCategory.normalizeOrDefault(
+            database.serialGroupDao().findById(groupId)?.category,
+        )
     }
 
-    private fun partialMissingFieldsReply(row: SerialEntity): String {
+    private suspend fun knownCityFor(phone: String): String? {
+        return database.serialDao().findLatestCityByPhone(phone)?.takeIf { it.isNotBlank() }
+    }
+
+    /**
+     * Copy a previously known city onto the row when blank, and mark complete when
+     * seller/known-city rules say nothing else is required.
+     */
+    private suspend fun applyKnownCityAndMaybeComplete(phone: String, serial: String): SerialEntity? {
+        val dao = database.serialDao()
+        val row = dao.findBySerial(serial) ?: return null
+        if (row.phone?.trim() != phone.trim()) return row
+
+        val category = categoryFor(row)
+        val known = knownCityFor(phone)
+        val effectiveCity = RegistrationFieldRules.effectiveCity(row.city, known)
+        val complete = RegistrationFieldRules.fieldsComplete(effectiveCity, row.km, category, null)
+        val cityNeedsWrite = row.city.isNullOrBlank() && effectiveCity != null
+        val flagNeedsWrite = complete != row.registrationFieldsComplete
+
+        if (!cityNeedsWrite && !flagNeedsWrite) {
+            return row
+        }
+
+        dao.updateRegistrationFields(
+            phone = phone,
+            serial = serial,
+            city = effectiveCity,
+            km = row.km,
+            fieldsComplete = complete,
+        )
+        val updated = dao.findBySerial(serial) ?: return null
+        if (cityNeedsWrite || (complete && !row.registrationFieldsComplete)) {
+            syncWriter.recordRegistrationUpdated(
+                serial = updated.serial,
+                phone = phone,
+                date = updated.date ?: JalaliHelper.nowJalaliDateTime(),
+                city = updated.city,
+                km = updated.km,
+            )
+        }
+        return updated
+    }
+
+    private suspend fun partialMissingFieldsReply(
+        row: SerialEntity,
+        category: String? = null,
+        knownCity: String? = null,
+    ): String {
+        val resolvedCategory = category ?: categoryFor(row)
+        val known = knownCity ?: row.phone?.let { knownCityFor(it) }
+        val missing = RegistrationFieldRules.missingFields(row.city, row.km, resolvedCategory, known)
         val example = when {
-            row.city.isNullOrBlank() && row.km == null ->
+            missing.city && missing.km ->
                 "${row.serial} ${SmsMessageCatalog.EXAMPLE_CITY} ${SmsMessageCatalog.EXAMPLE_KM}"
-            row.city.isNullOrBlank() -> "${row.serial} ${SmsMessageCatalog.EXAMPLE_CITY}"
-            row.km == null -> "${row.serial} ${SmsMessageCatalog.EXAMPLE_KM}"
+            missing.city -> "${row.serial} ${SmsMessageCatalog.EXAMPLE_CITY}"
+            missing.km -> "${row.serial} ${SmsMessageCatalog.EXAMPLE_KM}"
             else -> row.serial
         }
         return when {
-            row.city.isNullOrBlank() && row.km == null ->
+            missing.city && missing.km ->
                 templates.resolve(SmsMessageId.PARTIAL_MISSING_CITY_KM, mapOf("@1" to example))
-            row.city.isNullOrBlank() ->
+            missing.city ->
                 templates.resolve(SmsMessageId.PARTIAL_MISSING_CITY, mapOf("@1" to example))
-            row.km == null ->
+            missing.km ->
                 templates.resolve(SmsMessageId.KM_INVALID_WITH_EXAMPLE, mapOf("@1" to example))
-            else -> replyValid()
+            else -> templates.resolve(SmsMessageId.REPLY_VALID, mapOf("@1" to "طبق شرایط محصول"))
         }
     }
 
@@ -597,12 +886,60 @@ class SmsProcessingEngine(
         return SerialNormalizer.normalizeSerial(firstToken)
     }
 
-    private fun replyValid(): String = templates.resolve(SmsMessageId.REPLY_VALID)
+    private suspend fun replyValid(serial: String? = null): String {
+        val warrantyLabel = resolveWarrantyLabel(serial)
+        val base = templates.resolve(
+            SmsMessageId.REPLY_VALID,
+            mapOf("@1" to warrantyLabel),
+        )
+        if (serial.isNullOrBlank() || !isImageVerificationRequired(serial)) {
+            return base
+        }
+        val photoHint = appContext.getString(
+            R.string.bot_photo_verify_after_register,
+            SerialNormalizer.normalizeSerial(serial),
+        )
+        return "$base\n\n$photoHint"
+    }
+
+    private suspend fun resolveWarrantyLabel(serial: String?): String {
+        if (serial.isNullOrBlank()) return "طبق شرایط محصول"
+        val row = database.serialDao().findBySerial(SerialNormalizer.normalizeSerial(serial))
+            ?: return "طبق شرایط محصول"
+        val groupId = row.groupId ?: return "طبق شرایط محصول"
+        val group = database.serialGroupDao().findById(groupId) ?: return "طبق شرایط محصول"
+        return SerialGroupWarranty.formatFa(group.warrantyMonths, group.warrantyKm)
+            ?: "طبق شرایط محصول"
+    }
+
+    suspend fun isImageVerificationRequired(serial: String?): Boolean {
+        if (serial.isNullOrBlank()) return false
+        val row = database.serialDao().findBySerial(SerialNormalizer.normalizeSerial(serial))
+            ?: return false
+        val groupId = row.groupId ?: return false
+        val group = database.serialGroupDao().findById(groupId) ?: return false
+        return group.imageVerificationRequired
+    }
 
     private fun replyInvalid(): String = templates.resolve(SmsMessageId.REPLY_INVALID)
 
-    private fun response(reply: String): GatewayApi.GatewayResponse {
-        return GatewayApi.GatewayResponse(REPLY_STATUS, reply)
+    private fun response(
+        reply: String,
+        firstRegistration: Boolean = false,
+        registrationSucceeded: Boolean = false,
+        imageVerificationRequired: Boolean = false,
+        registeredSerial: String? = null,
+        replySubscriptionId: Int? = null,
+    ): GatewayApi.GatewayResponse {
+        return GatewayApi.GatewayResponse(
+            status = REPLY_STATUS,
+            reply = reply,
+            firstRegistration = firstRegistration,
+            registrationSucceeded = registrationSucceeded,
+            imageVerificationRequired = imageVerificationRequired,
+            registeredSerial = registeredSerial,
+            replySubscriptionId = replySubscriptionId,
+        )
     }
 
     companion object {

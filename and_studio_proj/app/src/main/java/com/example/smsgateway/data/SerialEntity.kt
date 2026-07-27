@@ -23,7 +23,11 @@ data class SerialEntity(
     val completionReminderSentAt: Long? = null,
     val registrationFieldsComplete: Boolean = true,
     val registrationSubscriptionId: Int? = null,
+    /** sms | rubika | telegram — channel that performed registration */
+    val registrationSource: String? = null,
     val groupId: Long? = null,
+    /** Last-write-wins timestamp for cloud hybrid sync (epoch ms). */
+    val syncUpdatedMs: Long = 0,
 ) {
     fun needsCompletion(): Boolean {
         return !phone.isNullOrBlank() && !registrationFieldsComplete
@@ -31,6 +35,7 @@ data class SerialEntity(
 
     fun completionReminderSent(): Boolean = completionReminderSentAt != null
 
+    /** @deprecated Prefer RegistrationFieldRules.missingFields with category + knownCity. */
     fun hasMissingRegistrationFields(): Boolean {
         return city.isNullOrBlank() || km == null
     }

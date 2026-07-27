@@ -6,15 +6,24 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "build:remote": "vite build --mode remote",
     "preview": "vite preview"
   },
   "dependencies": {
+    "arabic-persian-reshaper": "^1.0.1",
+    "bidi-js": "^1.0.3",
+    "canvas-confetti": "^1.9.4",
+    "chart.js": "^4.4.8",
+    "jspdf": "^2.5.2",
+    "jspdf-autotable": "^3.8.4",
     "moment-jalaali": "^0.10.4",
     "vue": "^3.5.13",
     "vue-router": "^4.5.0",
-    "vue3-persian-datetime-picker": "^1.2.2"
+    "vue3-persian-datetime-picker": "^1.2.2",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
+    "@types/canvas-confetti": "^1.9.0",
     "@vitejs/plugin-vue": "^5.2.1",
     "typescript": "~5.7.2",
     "vite": "^6.0.5",

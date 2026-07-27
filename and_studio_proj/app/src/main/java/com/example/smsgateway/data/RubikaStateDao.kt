@@ -30,4 +30,23 @@ interface RubikaChatContactDao {
         """,
     )
     fun backfillMessagePhones(chatId: String, phoneNumber: String)
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM rubika_chats
+        WHERE phoneNumber = :phone
+          AND phoneNumber IS NOT NULL AND phoneNumber != ''
+        """,
+    )
+    fun countByPhone(phone: String): Int
+
+    @Query(
+        """
+        SELECT * FROM rubika_chats
+        WHERE phoneNumber = :phone
+          AND phoneNumber IS NOT NULL AND phoneNumber != ''
+        LIMIT 1
+        """,
+    )
+    fun findByPhone(phone: String): RubikaChatContactEntity?
 }

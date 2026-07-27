@@ -1,8 +1,19 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import NavBar from '@/components/NavBar.vue'
-import { fetchSmsProcessingSettings, updateSmsProcessingSettings } from '@/api/client'
-import type { SmsField, SmsProcessingMode, SmsProcessingSettings, StepFlowType } from '@/api/types'
+import {
+  fetchSmsProcessingSettings,
+  updateSmsProcessingSettings,
+  fetchSimQuotaSettings,
+  updateSimQuotaSettings,
+} from '@/api/client'
+import type {
+  SmsField,
+  SmsProcessingMode,
+  SmsProcessingSettings,
+  SimQuotaSettings,
+  StepFlowType,
+} from '@/api/types'
 
 const FIELD_LABELS: Record<SmsField, string> = {
   SERIAL: 'سریال',
@@ -24,6 +35,13 @@ const config = ref<SmsProcessingSettings>({
   stepFlowType: 'SEQUENTIAL',
   sessionTimeoutMinutes: 30,
 })
+const simQuota = ref<SimQuotaSettings>({
+  dailyLimit: 300,
+  backupSimsEnabled: false,
+})
+const simQuotaSaving = ref(false)
+const simQuotaError = ref('')
+const simQuotaSuccess = ref('')
 
 const dragIndex = ref<number | null>(null)
 
@@ -44,8 +62,14 @@ function normalizeForSave(settings: SmsProcessingSettings): SmsProcessingSetting
 async function loadSettings() {
   loading.value = true
   error.value = ''
+  simQuotaError.value = ''
   try {
-    config.value = await fetchSmsProcessingSettings()
+    const [processing, quota] = await Promise.all([
+      fetchSmsProcessingSettings(),
+      fetchSimQuotaSettings(),
+    ])
+    config.value = processing
+    simQuota.value = quota
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'خطا در بارگذاری تنظیمات'
   } finally {
@@ -64,6 +88,27 @@ async function saveSettings() {
     error.value = e instanceof Error ? e.message : 'خطا در ذخیره تنظیمات'
   } finally {
     saving.value = false
+  }
+}
+
+async function saveSimQuota() {
+  simQuotaSaving.value = true
+  simQuotaError.value = ''
+  simQuotaSuccess.value = ''
+  try {
+    const limit = Number(simQuota.value.dailyLimit)
+    if (!Number.isFinite(limit) || limit < 1 || limit > 100000) {
+      throw new Error('سقف روزانه باید بین ۱ تا ۱۰۰۰۰۰ باشد')
+    }
+    simQuota.value = await updateSimQuotaSettings({
+      dailyLimit: Math.floor(limit),
+      backupSimsEnabled: simQuota.value.backupSimsEnabled,
+    })
+    simQuotaSuccess.value = 'تنظیمات سیم‌کارت ذخیره شد.'
+  } catch (e) {
+    simQuotaError.value = e instanceof Error ? e.message : 'خطا در ذخیره تنظیمات سیم‌کارت'
+  } finally {
+    simQuotaSaving.value = false
   }
 }
 
@@ -251,6 +296,37 @@ onMounted(loadSettings)
               {{ saving ? 'در حال ذخیره...' : 'ذخیره تنظیمات' }}
             </button>
             <button class="secondary" :disabled="loading" @click="loadSettings">بازنشانی</button>
+          </div>
+        </template>
+      </div>
+
+      <div class="card" style="margin-top: 1rem">
+        <h1>سهمیه و سیم‌کارت پشتیبان</h1>
+        <p class="hint">
+          سقف ارسال در ۲۴ ساعت گذشته برای هر سیم‌کارت. با فعال‌سازی پشتیبان، سیم‌کارت‌های دیگر گوشی
+          برای ارسال و دریافت استفاده می‌شوند وقتی سیم اصلی نزدیک سقف باشد.
+        </p>
+        <p v-if="loading" class="hint">در حال بارگذاری...</p>
+        <template v-else>
+          <label class="timeout-field">
+            سقف روزانه هر سیم‌کارت
+            <input v-model.number="simQuota.dailyLimit" type="number" min="1" max="100000" />
+          </label>
+          <label class="radio-row" style="margin-top: 1rem">
+            <input v-model="simQuota.backupSimsEnabled" type="checkbox" />
+            <span>
+              <strong>کشف و استفاده از سیم‌کارت پشتیبان</strong>
+              <small>
+                اگر سیم اصلی نزدیک سقف باشد، ارسال و مکالمات جدید روی سیم پشتیبان ادامه می‌یابد.
+              </small>
+            </span>
+          </label>
+          <p v-if="simQuotaError" class="error">{{ simQuotaError }}</p>
+          <p v-if="simQuotaSuccess" class="success">{{ simQuotaSuccess }}</p>
+          <div class="actions">
+            <button class="primary" :disabled="simQuotaSaving" @click="saveSimQuota">
+              {{ simQuotaSaving ? 'در حال ذخیره...' : 'ذخیره تنظیمات سیم‌کارت' }}
+            </button>
           </div>
         </template>
       </div>

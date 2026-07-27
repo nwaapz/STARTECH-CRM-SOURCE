@@ -18,7 +18,7 @@ interface SerialDao {
         SELECT * FROM gateway_db
         WHERE phone = :phone
           AND phone IS NOT NULL AND phone != ''
-          AND (city IS NULL OR city = '' OR km IS NULL)
+          AND registrationFieldsComplete = 0
         ORDER BY id DESC
         LIMIT 1
         """,
@@ -27,8 +27,30 @@ interface SerialDao {
 
     @Query(
         """
+        SELECT city FROM gateway_db
+        WHERE phone = :phone
+          AND phone IS NOT NULL AND phone != ''
+          AND city IS NOT NULL AND TRIM(city) != ''
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+    )
+    suspend fun findLatestCityByPhone(phone: String): String?
+
+    @Query(
+        """
+        SELECT phone, city FROM gateway_db
+        WHERE phone IN (:phones)
+          AND city IS NOT NULL AND TRIM(city) != ''
+        ORDER BY id DESC
+        """,
+    )
+    suspend fun listCitiesByPhones(phones: List<String>): List<RegisteredPhoneCityRow>
+
+    @Query(
+        """
         UPDATE gateway_db
-        SET city = :city, km = :km, registrationFieldsComplete = 1
+        SET city = :city, km = :km, registrationFieldsComplete = :fieldsComplete
         WHERE UPPER(serial) = UPPER(:serial)
           AND phone = :phone
         """,
@@ -38,6 +60,33 @@ interface SerialDao {
         serial: String,
         city: String?,
         km: Int?,
+        fieldsComplete: Boolean,
+    ): Int
+
+    @Query(
+        """
+        UPDATE gateway_db
+        SET serial = :serial,
+            date = :date,
+            city = :city,
+            km = :km,
+            registrationFieldsComplete = CASE
+                WHEN phone IS NOT NULL AND phone != ''
+                     AND (:city IS NOT NULL AND :city != '')
+                     AND (:requiresKm = 0 OR :km IS NOT NULL) THEN 1
+                WHEN phone IS NOT NULL AND phone != '' THEN 0
+                ELSE registrationFieldsComplete
+            END
+        WHERE id = :id
+        """,
+    )
+    suspend fun updateRegistrationById(
+        id: Long,
+        serial: String,
+        date: String?,
+        city: String?,
+        km: Int?,
+        requiresKm: Int,
     ): Int
 
     @Query(
@@ -52,7 +101,8 @@ interface SerialDao {
     @Query(
         """
         UPDATE gateway_db
-        SET phone = :phone, date = :date, registrationFieldsComplete = 1, registrationSubscriptionId = :subscriptionId
+        SET phone = :phone, date = :date, registrationFieldsComplete = 1,
+            registrationSubscriptionId = :subscriptionId, registrationSource = :registrationSource
         WHERE UPPER(serial) = UPPER(:serial)
           AND (phone IS NULL OR phone = '')
         """,
@@ -62,12 +112,14 @@ interface SerialDao {
         date: String,
         serial: String,
         subscriptionId: Int?,
+        registrationSource: String?,
     ): Int
 
     @Query(
         """
         UPDATE gateway_db
-        SET phone = :phone, date = :date, registrationFieldsComplete = 0, registrationSubscriptionId = :subscriptionId
+        SET phone = :phone, date = :date, registrationFieldsComplete = 0,
+            registrationSubscriptionId = :subscriptionId, registrationSource = :registrationSource
         WHERE UPPER(serial) = UPPER(:serial)
           AND (phone IS NULL OR phone = '')
         """,
@@ -77,6 +129,7 @@ interface SerialDao {
         date: String,
         serial: String,
         subscriptionId: Int?,
+        registrationSource: String?,
     ): Int
 
     @Query(
@@ -98,10 +151,12 @@ interface SerialDao {
         UPDATE gateway_db
         SET phone = :phone, date = :date, city = :city, km = :km,
             registrationFieldsComplete = CASE
-                WHEN (:city IS NOT NULL AND :city != '') AND (:km IS NOT NULL) THEN 1
+                WHEN (:city IS NOT NULL AND :city != '')
+                     AND (:requiresKm = 0 OR :km IS NOT NULL) THEN 1
                 ELSE 0
             END,
-            registrationSubscriptionId = :subscriptionId
+            registrationSubscriptionId = :subscriptionId,
+            registrationSource = :registrationSource
         WHERE UPPER(serial) = UPPER(:serial)
           AND (phone IS NULL OR phone = '')
         """,
@@ -113,7 +168,23 @@ interface SerialDao {
         city: String?,
         km: Int?,
         subscriptionId: Int?,
+        registrationSource: String?,
+        requiresKm: Int,
     ): Int
+
+    /**
+     * Lowest serial row id registered to a phone, matched by its 10-digit national suffix
+     * (e.g. "9123456789") so it works regardless of stored prefix (09.., +98.., 98..).
+     * Mirrors the id used by DeviceContactHelper to name device contacts "client<id>".
+     */
+    @Query(
+        """
+        SELECT MIN(id) FROM gateway_db
+        WHERE phone IS NOT NULL AND phone != ''
+          AND phone LIKE '%' || :national
+        """,
+    )
+    suspend fun findFirstRowIdByNationalSuffix(national: String): Long?
 
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(entities: List<SerialEntity>): List<Long>
@@ -195,24 +266,45 @@ interface SerialDao {
 
     @Query(
         """
-        SELECT * FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
-          AND (:fromDate = '' OR substr(date, 1, 10) >= substr(:fromDate, 1, 10))
-          AND (:toDate = '' OR substr(date, 1, 10) <= substr(:toDate, 1, 10))
+        SELECT gateway_db.* FROM gateway_db
+        LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
+        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND (:fromDate = '' OR substr(gateway_db.date, 1, 10) >= substr(:fromDate, 1, 10))
+          AND (:toDate = '' OR substr(gateway_db.date, 1, 10) <= substr(:toDate, 1, 10))
+          AND (
+            :filterSms = 0 AND :filterRubika = 0 AND :filterTelegram = 0 AND :filterBale = 0
+            OR (:filterSms = 1 AND (gateway_db.registrationSource = 'sms' OR gateway_db.registrationSource IS NULL OR gateway_db.registrationSource = ''))
+            OR (:filterRubika = 1 AND gateway_db.registrationSource = 'rubika')
+            OR (:filterTelegram = 1 AND gateway_db.registrationSource = 'telegram')
+            OR (:filterBale = 1 AND gateway_db.registrationSource = 'bale')
+          )
+          AND (
+            :filterEndUser = 0 AND :filterSeller = 0
+            OR (
+              :filterEndUser = 1 AND (
+                serial_groups.category = 'end_user_client'
+                OR serial_groups.category IS NULL
+                OR serial_groups.category = ''
+                OR gateway_db.groupId IS NULL
+              )
+            )
+            OR (:filterSeller = 1 AND serial_groups.category = 'seller_to_end_user')
+          )
+          AND (:useGroupFilter = 0 OR gateway_db.groupId IN (:groupIds))
           AND (
             :search = ''
-            OR serial LIKE '%' || :search || '%'
+            OR gateway_db.serial LIKE '%' || :search || '%'
             OR (
               :phoneNorm != ''
               AND (
-                phone LIKE '%' || :phoneNorm || '%'
-                OR phone LIKE '%+98' || substr(:phoneNorm, 2) || '%'
-                OR phone LIKE '%98' || substr(:phoneNorm, 2) || '%'
+                gateway_db.phone LIKE '%' || :phoneNorm || '%'
+                OR gateway_db.phone LIKE '%+98' || substr(:phoneNorm, 2) || '%'
+                OR gateway_db.phone LIKE '%98' || substr(:phoneNorm, 2) || '%'
               )
             )
-            OR (:phoneNorm = '' AND :search != '' AND phone LIKE '%' || :search || '%')
+            OR (:phoneNorm = '' AND :search != '' AND gateway_db.phone LIKE '%' || :search || '%')
           )
-        ORDER BY id DESC
+        ORDER BY gateway_db.date DESC, gateway_db.id DESC
         LIMIT :limit OFFSET :offset
         """,
     )
@@ -221,28 +313,115 @@ interface SerialDao {
         toDate: String,
         search: String,
         phoneNorm: String,
+        filterSms: Int,
+        filterRubika: Int,
+        filterTelegram: Int,
+        filterBale: Int,
+        filterEndUser: Int,
+        filterSeller: Int,
+        useGroupFilter: Int,
+        groupIds: List<Long>,
         limit: Int,
         offset: Int,
     ): List<SerialEntity>
 
     @Query(
         """
-        SELECT COUNT(*) FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
-          AND (:fromDate = '' OR substr(date, 1, 10) >= substr(:fromDate, 1, 10))
-          AND (:toDate = '' OR substr(date, 1, 10) <= substr(:toDate, 1, 10))
+        SELECT gateway_db.* FROM gateway_db
+        LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
+        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND (:fromDate = '' OR substr(gateway_db.date, 1, 10) >= substr(:fromDate, 1, 10))
+          AND (:toDate = '' OR substr(gateway_db.date, 1, 10) <= substr(:toDate, 1, 10))
+          AND (
+            :filterSms = 0 AND :filterRubika = 0 AND :filterTelegram = 0 AND :filterBale = 0
+            OR (:filterSms = 1 AND (gateway_db.registrationSource = 'sms' OR gateway_db.registrationSource IS NULL OR gateway_db.registrationSource = ''))
+            OR (:filterRubika = 1 AND gateway_db.registrationSource = 'rubika')
+            OR (:filterTelegram = 1 AND gateway_db.registrationSource = 'telegram')
+            OR (:filterBale = 1 AND gateway_db.registrationSource = 'bale')
+          )
+          AND (
+            :filterEndUser = 0 AND :filterSeller = 0
+            OR (
+              :filterEndUser = 1 AND (
+                serial_groups.category = 'end_user_client'
+                OR serial_groups.category IS NULL
+                OR serial_groups.category = ''
+                OR gateway_db.groupId IS NULL
+              )
+            )
+            OR (:filterSeller = 1 AND serial_groups.category = 'seller_to_end_user')
+          )
+          AND (:useGroupFilter = 0 OR gateway_db.groupId IN (:groupIds))
           AND (
             :search = ''
-            OR serial LIKE '%' || :search || '%'
+            OR gateway_db.serial LIKE '%' || :search || '%'
             OR (
               :phoneNorm != ''
               AND (
-                phone LIKE '%' || :phoneNorm || '%'
-                OR phone LIKE '%+98' || substr(:phoneNorm, 2) || '%'
-                OR phone LIKE '%98' || substr(:phoneNorm, 2) || '%'
+                gateway_db.phone LIKE '%' || :phoneNorm || '%'
+                OR gateway_db.phone LIKE '%+98' || substr(:phoneNorm, 2) || '%'
+                OR gateway_db.phone LIKE '%98' || substr(:phoneNorm, 2) || '%'
               )
             )
-            OR (:phoneNorm = '' AND :search != '' AND phone LIKE '%' || :search || '%')
+            OR (:phoneNorm = '' AND :search != '' AND gateway_db.phone LIKE '%' || :search || '%')
+          )
+        ORDER BY gateway_db.date DESC, gateway_db.id DESC
+        """,
+    )
+    suspend fun listRegisteredFilteredUnpaged(
+        fromDate: String,
+        toDate: String,
+        search: String,
+        phoneNorm: String,
+        filterSms: Int,
+        filterRubika: Int,
+        filterTelegram: Int,
+        filterBale: Int,
+        filterEndUser: Int,
+        filterSeller: Int,
+        useGroupFilter: Int,
+        groupIds: List<Long>,
+    ): List<SerialEntity>
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM gateway_db
+        LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
+        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND (:fromDate = '' OR substr(gateway_db.date, 1, 10) >= substr(:fromDate, 1, 10))
+          AND (:toDate = '' OR substr(gateway_db.date, 1, 10) <= substr(:toDate, 1, 10))
+          AND (
+            :filterSms = 0 AND :filterRubika = 0 AND :filterTelegram = 0 AND :filterBale = 0
+            OR (:filterSms = 1 AND (gateway_db.registrationSource = 'sms' OR gateway_db.registrationSource IS NULL OR gateway_db.registrationSource = ''))
+            OR (:filterRubika = 1 AND gateway_db.registrationSource = 'rubika')
+            OR (:filterTelegram = 1 AND gateway_db.registrationSource = 'telegram')
+            OR (:filterBale = 1 AND gateway_db.registrationSource = 'bale')
+          )
+          AND (
+            :filterEndUser = 0 AND :filterSeller = 0
+            OR (
+              :filterEndUser = 1 AND (
+                serial_groups.category = 'end_user_client'
+                OR serial_groups.category IS NULL
+                OR serial_groups.category = ''
+                OR gateway_db.groupId IS NULL
+              )
+            )
+            OR (:filterSeller = 1 AND serial_groups.category = 'seller_to_end_user')
+          )
+          AND (:useGroupFilter = 0 OR gateway_db.groupId IN (:groupIds))
+          AND (
+            :search = ''
+            OR gateway_db.serial LIKE '%' || :search || '%'
+            OR (
+              :phoneNorm != ''
+              AND (
+                gateway_db.phone LIKE '%' || :phoneNorm || '%'
+                OR gateway_db.phone LIKE '%+98' || substr(:phoneNorm, 2) || '%'
+                OR gateway_db.phone LIKE '%98' || substr(:phoneNorm, 2) || '%'
+              )
+            )
+            OR (:phoneNorm = '' AND :search != '' AND gateway_db.phone LIKE '%' || :search || '%')
           )
         """,
     )
@@ -251,6 +430,14 @@ interface SerialDao {
         toDate: String,
         search: String,
         phoneNorm: String,
+        filterSms: Int,
+        filterRubika: Int,
+        filterTelegram: Int,
+        filterBale: Int,
+        filterEndUser: Int,
+        filterSeller: Int,
+        useGroupFilter: Int,
+        groupIds: List<Long>,
     ): Int
 
     @Query(
@@ -282,6 +469,73 @@ interface SerialDao {
 
     @Query(
         """
+        SELECT serial FROM gateway_db
+        WHERE groupId = :groupId
+        ORDER BY id ASC
+        """,
+    )
+    suspend fun listSerialValuesByGroupId(groupId: Long): List<String>
+
+    @Query(
+        """
+        SELECT * FROM gateway_db
+        WHERE groupId = :groupId
+        ORDER BY id ASC
+        """,
+    )
+    suspend fun listByGroupId(groupId: Long): List<SerialEntity>
+
+    @Query(
+        """
+        SELECT * FROM gateway_db
+        WHERE groupId = :groupId
+        ORDER BY id ASC
+        LIMIT :limit OFFSET :offset
+        """,
+    )
+    suspend fun listByGroupIdPaged(groupId: Long, limit: Int, offset: Int): List<SerialEntity>
+
+    @Query(
+        """
+        UPDATE gateway_db
+        SET syncUpdatedMs = :syncUpdatedMs
+        WHERE UPPER(serial) = UPPER(:serial)
+        """,
+    )
+    suspend fun touchSyncUpdatedMs(serial: String, syncUpdatedMs: Long): Int
+
+    /**
+     * Apply remote/cloud LWW fields when incoming syncUpdatedMs is >= local.
+     */
+    @Query(
+        """
+        UPDATE gateway_db
+        SET phone = :phone,
+            date = :date,
+            city = :city,
+            km = :km,
+            registrationFieldsComplete = :fieldsComplete,
+            registrationSource = :registrationSource,
+            groupId = :groupId,
+            syncUpdatedMs = :syncUpdatedMs
+        WHERE UPPER(serial) = UPPER(:serial)
+          AND syncUpdatedMs <= :syncUpdatedMs
+        """,
+    )
+    suspend fun applySyncUpsert(
+        serial: String,
+        phone: String?,
+        date: String?,
+        city: String?,
+        km: Int?,
+        fieldsComplete: Boolean,
+        registrationSource: String?,
+        groupId: Long?,
+        syncUpdatedMs: Long,
+    ): Int
+
+    @Query(
+        """
         SELECT phone, city FROM gateway_db
         WHERE phone IS NOT NULL AND phone != ''
           AND (:fromDate = '' OR substr(date, 1, 10) >= substr(:fromDate, 1, 10))
@@ -293,6 +547,170 @@ interface SerialDao {
         fromDate: String = "",
         toDate: String = "",
     ): List<RegisteredPhoneCityRow>
+
+    @Query(
+        """
+        SELECT phone FROM gateway_db
+        WHERE phone IS NOT NULL AND phone != ''
+          AND substr(date, 1, 10) = :targetDate
+        GROUP BY phone
+        """,
+    )
+    suspend fun listDistinctPhonesRegisteredOnDate(targetDate: String): List<String>
+
+    @Query(
+        """
+        SELECT gateway_db.phone FROM gateway_db
+        LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
+        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND substr(gateway_db.date, 1, 10) = :targetDate
+          AND (
+            (:serialCategory = 'end_user_client' AND (
+              serial_groups.category = 'end_user_client'
+              OR serial_groups.category IS NULL
+              OR serial_groups.category = ''
+              OR gateway_db.groupId IS NULL
+            ))
+            OR (:serialCategory = 'seller_to_end_user' AND serial_groups.category = 'seller_to_end_user')
+          )
+        GROUP BY gateway_db.phone
+        """,
+    )
+    suspend fun listDistinctPhonesRegisteredOnDateForCategory(
+        targetDate: String,
+        serialCategory: String,
+    ): List<String>
+
+    @Query(
+        """
+        SELECT phone FROM gateway_db
+        WHERE phone IS NOT NULL AND phone != ''
+          AND substr(date, 1, 10) = :targetDate
+          AND groupId IN (:groupIds)
+        GROUP BY phone
+        """,
+    )
+    suspend fun listDistinctPhonesRegisteredOnDateForGroups(
+        targetDate: String,
+        groupIds: List<Long>,
+    ): List<String>
+
+    /**
+     * Phones whose registration date is on or before [onOrBeforeDate] (Jalali YYYY/MM/DD),
+     * used for club auto-message catch-up (eligible once offset has passed).
+     *
+     * Date filtering is done in Kotlin via [JalaliHelper.isJalaliDateOnOrBefore] so Persian/Arabic
+     * digit dates (stored under fa_IR locale) still compare correctly against Latin cutoffs.
+     */
+    @Query(
+        """
+        SELECT gateway_db.phone AS phone, gateway_db.date AS date FROM gateway_db
+        LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
+        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND (
+            (:serialCategory = 'end_user_client' AND (
+              serial_groups.category = 'end_user_client'
+              OR serial_groups.category IS NULL
+              OR serial_groups.category = ''
+              OR gateway_db.groupId IS NULL
+            ))
+            OR (:serialCategory = 'seller_to_end_user' AND serial_groups.category = 'seller_to_end_user')
+          )
+        """,
+    )
+    suspend fun listRegisteredPhoneDatesForCategory(
+        serialCategory: String,
+    ): List<PhoneDateRow>
+
+    @Query(
+        """
+        SELECT phone, date FROM gateway_db
+        WHERE phone IS NOT NULL AND phone != ''
+          AND groupId IN (:groupIds)
+        """,
+    )
+    suspend fun listRegisteredPhoneDatesForGroups(
+        groupIds: List<Long>,
+    ): List<PhoneDateRow>
+
+    /**
+     * Serials registered for [phone], matching the given category.
+     * Callers must filter by registration date with [JalaliHelper.isJalaliDateOnOrBefore].
+     */
+    @Query(
+        """
+        SELECT gateway_db.serial AS serial, gateway_db.date AS date, gateway_db.km AS km FROM gateway_db
+        LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
+        WHERE gateway_db.phone = :phone
+          AND gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND (
+            (:serialCategory = 'end_user_client' AND (
+              serial_groups.category = 'end_user_client'
+              OR serial_groups.category IS NULL
+              OR serial_groups.category = ''
+              OR gateway_db.groupId IS NULL
+            ))
+            OR (:serialCategory = 'seller_to_end_user' AND serial_groups.category = 'seller_to_end_user')
+          )
+        ORDER BY gateway_db.id ASC
+        """,
+    )
+    suspend fun listRegisteredSerialDatesForCategory(
+        phone: String,
+        serialCategory: String,
+    ): List<SerialDateRow>
+
+    @Query(
+        """
+        SELECT serial, date, km FROM gateway_db
+        WHERE phone = :phone
+          AND phone IS NOT NULL AND phone != ''
+          AND groupId IN (:groupIds)
+        ORDER BY id ASC
+        """,
+    )
+    suspend fun listRegisteredSerialDatesForGroups(
+        phone: String,
+        groupIds: List<Long>,
+    ): List<SerialDateRow>
+
+    /**
+     * All registered serials in groups (phone + serial + date + km).
+     * Callers filter by registration date and sort oldest-first.
+     */
+    @Query(
+        """
+        SELECT phone, serial, date, km FROM gateway_db
+        WHERE phone IS NOT NULL AND phone != ''
+          AND serial IS NOT NULL AND serial != ''
+          AND groupId IN (:groupIds)
+        """,
+    )
+    suspend fun listRegisteredPhoneSerialDatesForGroups(
+        groupIds: List<Long>,
+    ): List<PhoneSerialDateRow>
+
+    @Query(
+        """
+        SELECT gateway_db.phone AS phone, gateway_db.serial AS serial,
+               gateway_db.date AS date, gateway_db.km AS km FROM gateway_db
+        LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
+        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND gateway_db.serial IS NOT NULL AND gateway_db.serial != ''
+          AND (
+            (:serialCategory = 'end_user_client' AND (
+              serial_groups.category = 'end_user_client'
+              OR serial_groups.category IS NULL
+              OR serial_groups.category = ''
+              OR gateway_db.groupId IS NULL
+            ))
+            OR (:serialCategory = 'seller_to_end_user' AND serial_groups.category = 'seller_to_end_user')
+          )
+        """,
+    )
+    suspend fun listRegisteredPhoneSerialDatesForCategory(
+        serialCategory: String,
+    ): List<PhoneSerialDateRow>
 
     @Query(
         """
@@ -309,4 +727,99 @@ interface SerialDao {
         fromDate: String = "",
         toDate: String = "",
     ): List<RegisteredPhoneCityRow>
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM gateway_db
+        WHERE phone = :phone AND phone IS NOT NULL AND phone != ''
+          AND serial LIKE 'M%'
+        """,
+    )
+    suspend fun countRegisteredMCode(phone: String): Int
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM gateway_db
+        WHERE phone = :phone AND phone IS NOT NULL AND phone != ''
+          AND registrationFieldsComplete = 1
+        """,
+    )
+    suspend fun countCompletedRegistrationsByPhone(phone: String): Int
+
+    @Query(
+        """
+        SELECT * FROM gateway_db
+        WHERE phone = :phone AND phone IS NOT NULL AND phone != ''
+          AND registrationFieldsComplete = 1
+        ORDER BY id DESC
+        """,
+    )
+    suspend fun listCompletedByPhone(phone: String): List<SerialEntity>
+
+    /**
+     * Completed registrations for [phone] whose serial group requires image verification
+     * and that do not yet have a pending/approved photo submission.
+     */
+    @Query(
+        """
+        SELECT gateway_db.* FROM gateway_db
+        INNER JOIN serial_groups ON gateway_db.groupId = serial_groups.id
+        WHERE gateway_db.phone = :phone
+          AND gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND gateway_db.registrationFieldsComplete = 1
+          AND serial_groups.imageVerificationRequired = 1
+          AND NOT EXISTS (
+            SELECT 1 FROM serial_photo_submissions s
+            WHERE s.serial = gateway_db.serial
+              AND s.phone = gateway_db.phone
+              AND s.status IN ('pending', 'approved')
+          )
+        ORDER BY gateway_db.id DESC
+        """,
+    )
+    suspend fun listNeedingImageVerificationByPhone(phone: String): List<SerialEntity>
+
+    /**
+     * Daily registration counts by Jalali date prefix (YYYY/MM/DD).
+     * [fromDate]/[toDate] are Jalali YYYY/MM/DD (Latin digits).
+     */
+    @Query(
+        """
+        SELECT substr(date, 1, 10) AS day, COUNT(*) AS count
+        FROM gateway_db
+        WHERE phone IS NOT NULL AND phone != ''
+          AND date IS NOT NULL AND length(date) >= 10
+          AND (:fromDate = '' OR substr(date, 1, 10) >= :fromDate)
+          AND (:toDate = '' OR substr(date, 1, 10) <= :toDate)
+        GROUP BY substr(date, 1, 10)
+        ORDER BY day ASC
+        """,
+    )
+    suspend fun countRegisteredByJalaliDay(fromDate: String, toDate: String): List<DayCountRow>
 }
+
+/** Phone + raw registration date for club auto-message eligibility (date compared in Kotlin). */
+data class PhoneDateRow(
+    val phone: String,
+    val date: String?,
+)
+
+/** Serial + registration fields for club auto-message placeholder substitution. */
+data class SerialDateRow(
+    val serial: String,
+    val date: String?,
+    val km: Int? = null,
+)
+
+/** One registration row for per-serial club auto messaging. */
+data class PhoneSerialDateRow(
+    val phone: String,
+    val serial: String,
+    val date: String?,
+    val km: Int? = null,
+)
+
+data class DayCountRow(
+    val day: String,
+    val count: Int,
+)

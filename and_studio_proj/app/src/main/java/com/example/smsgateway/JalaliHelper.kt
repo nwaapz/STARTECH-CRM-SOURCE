@@ -1,6 +1,7 @@
 package com.example.smsgateway
 
 import java.util.Calendar
+import java.util.Locale
 
 object JalaliHelper {
     fun gregorianToJalali(year: Int, month: Int, day: Int): Triple<Int, Int, Int> {
@@ -37,8 +38,12 @@ object JalaliHelper {
         return Triple(jy, jm, jd)
     }
 
+    /**
+     * Always Latin ASCII digits. The app locale is fa_IR; using the default locale in
+     * String.format would store Persian/Arabic digits and break SQL date comparisons.
+     */
     fun formatJalaliDate(year: Int, month: Int, day: Int): String {
-        return String.format("%04d/%02d/%02d", year, month, day)
+        return String.format(Locale.US, "%04d/%02d/%02d", year, month, day)
     }
 
     fun todayJalaliDate(): String {
@@ -51,7 +56,24 @@ object JalaliHelper {
         return formatJalaliDate(jy, jm, jd)
     }
 
-    /** Persian (Jalali) date and time at registration, e.g. 1404/03/30 14:35:22 */
+    /** Jalali date for (today − months − days) using Gregorian calendar arithmetic. */
+    fun jalaliDateOffsetMonthsDays(monthsAgo: Int, daysAgo: Int): String {
+        val calendar = Calendar.getInstance()
+        if (monthsAgo != 0) {
+            calendar.add(Calendar.MONTH, -monthsAgo)
+        }
+        if (daysAgo != 0) {
+            calendar.add(Calendar.DAY_OF_MONTH, -daysAgo)
+        }
+        val (jy, jm, jd) = gregorianToJalali(
+            calendar.get(Calendar.YEAR),
+            calendar.get(Calendar.MONTH) + 1,
+            calendar.get(Calendar.DAY_OF_MONTH),
+        )
+        return formatJalaliDate(jy, jm, jd)
+    }
+
+    /** Persian (Jalali) date and time at registration, e.g. 1404/03/30 14:35:22 (Latin digits). */
     fun nowJalaliDateTime(): String {
         val calendar = Calendar.getInstance()
         val (jy, jm, jd) = gregorianToJalali(
@@ -63,20 +85,103 @@ object JalaliHelper {
         val hour = calendar.get(Calendar.HOUR_OF_DAY)
         val minute = calendar.get(Calendar.MINUTE)
         val second = calendar.get(Calendar.SECOND)
-        return String.format("%s %02d:%02d:%02d", datePart, hour, minute, second)
+        return String.format(Locale.US, "%s %02d:%02d:%02d", datePart, hour, minute, second)
     }
 
     private val dateOnlyPattern = Regex("^\\d{4}/\\d{2}/\\d{2}$")
 
+    /** YYYY/MM/DD prefix with Latin digits, or null if missing/invalid. */
+    fun datePrefixForCompare(storedDate: String?): String? {
+        if (storedDate.isNullOrBlank()) return null
+        val latin = PhoneUtils.normalizeToAsciiDigits(storedDate.trim())
+        if (latin.length < 10) return null
+        val prefix = latin.substring(0, 10)
+        return prefix.takeIf { dateOnlyPattern.matches(it) }
+    }
+
+    /** True when [storedDate]'s day is on or before [onOrBeforeDate] (both Jalali YYYY/MM/DD). */
+    fun isJalaliDateOnOrBefore(storedDate: String?, onOrBeforeDate: String): Boolean {
+        val prefix = datePrefixForCompare(storedDate) ?: return false
+        val cutoff = datePrefixForCompare(onOrBeforeDate) ?: onOrBeforeDate
+        return prefix <= cutoff
+    }
+
+    /**
+     * Normalizes registration timestamps to Latin digits (and date-only → start of day).
+     * Safe to call on values that are already Latin.
+     */
+    fun normalizeStoredDateTime(value: String): String {
+        val latin = PhoneUtils.normalizeToAsciiDigits(value.trim())
+        if (latin.isEmpty()) return latin
+        return if (isDateOnly(latin)) "$latin 00:00:00" else latin
+    }
+
     /** Appends start-of-day time when only a Jalali date is provided. */
     fun normalizeFromDateParam(value: String): String {
         if (value.isEmpty()) return value
-        return if (dateOnlyPattern.matches(value)) "$value 00:00:00" else value
+        val latin = PhoneUtils.normalizeToAsciiDigits(value.trim())
+        return if (dateOnlyPattern.matches(latin)) "$latin 00:00:00" else latin
     }
 
     /** Appends end-of-day time when only a Jalali date is provided. */
     fun normalizeToDateParam(value: String): String {
         if (value.isEmpty()) return value
-        return if (dateOnlyPattern.matches(value)) "$value 23:59:59" else value
+        val latin = PhoneUtils.normalizeToAsciiDigits(value.trim())
+        return if (dateOnlyPattern.matches(latin)) "$latin 23:59:59" else latin
+    }
+
+    fun isDateOnly(value: String): Boolean =
+        dateOnlyPattern.matches(PhoneUtils.normalizeToAsciiDigits(value.trim()))
+
+    /** Days in Jalali month (month 1–12). Esfand leap approx via algorithm. */
+    fun jalaliDaysInMonth(year: Int, month: Int): Int {
+        return when {
+            month in 1..6 -> 31
+            month in 7..11 -> 30
+            month == 12 -> if (isJalaliLeap(year)) 30 else 29
+            else -> 30
+        }
+    }
+
+    fun isJalaliLeap(year: Int): Boolean {
+        val breaks = intArrayOf(
+            -61, 9, 38, 199, 426, 686, 756, 818, 1111, 1181, 1210,
+            1635, 2060, 2097, 2192, 2262, 2324, 2394, 2456, 3178,
+        )
+        val jp = breaks
+        var jump = 0
+        var leapJ = -14
+        var jpVal = jp[0]
+        var jy = year
+        if (jy < jpVal || jy >= jp[jp.size - 1]) {
+            // Fallback: 33-year cycle approximation
+            return ((year + 2346) % 33) in listOf(1, 5, 9, 13, 17, 22, 26, 30)
+        }
+        for (i in 1 until jp.size) {
+            val jm = jp[i]
+            jump = jm - jpVal
+            if (jy < jm) break
+            leapJ += jump / 33 * 8 + (jump % 33) / 4
+            jpVal = jm
+        }
+        var n = jy - jpVal
+        if (n < jump) {
+            leapJ += n / 33 * 8 + (n % 33 + 3) / 4
+            if ((jump % 33) == 4 && (jump - n) == 4) leapJ++
+        }
+        val leap = (((leapJ + 1) % 33) - 1) % 4
+        return leap == -1 || leap == 0
+    }
+
+    /** First and last Jalali day of the current Persian month as YYYY/MM/DD. */
+    fun currentJalaliMonthRange(): Pair<String, String> {
+        val calendar = Calendar.getInstance()
+        val (jy, jm, _) = gregorianToJalali(
+            calendar.get(Calendar.YEAR),
+            calendar.get(Calendar.MONTH) + 1,
+            calendar.get(Calendar.DAY_OF_MONTH),
+        )
+        val last = jalaliDaysInMonth(jy, jm)
+        return formatJalaliDate(jy, jm, 1) to formatJalaliDate(jy, jm, last)
     }
 }

@@ -1,0 +1,11 @@
+{
+    "status": "done",
+    "total": 11501,
+    "processed": 11501,
+    "deleted_total": 11501,
+    "dry_run": false,
+    "last_offset": 0,
+    "started_at": "2026-06-20T01:46:48+03:30",
+    "updated_at": "2026-06-20T02:23:37+03:30",
+    "finished_at": "2026-06-20T02:23:37+03:30"
+}

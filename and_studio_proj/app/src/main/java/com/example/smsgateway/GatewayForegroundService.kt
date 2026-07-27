@@ -22,6 +22,9 @@ class GatewayForegroundService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 LanTraceLog.i("Service", "Foreground service stop requested")
+                ClubAutoMessageScheduler.getInstance(this).stop()
+                com.example.smsgateway.cloud.CloudSyncScheduler.getInstance(this).stop()
+                com.example.smsgateway.license.LicenseChecker.getInstance(this).stop()
                 stopLanServer()
                 SettingsStore.getInstance(this).setServiceEnabled(false)
                 stopForeground(STOP_FOREGROUND_REMOVE)
@@ -32,6 +35,9 @@ class GatewayForegroundService : Service() {
                 SettingsStore.getInstance(this).setServiceEnabled(true)
                 LanTraceLog.i("Service", "Foreground service started")
                 startLanServerIfEnabled()
+                ClubAutoMessageScheduler.getInstance(this).start()
+                com.example.smsgateway.cloud.CloudSyncScheduler.getInstance(this).start()
+                com.example.smsgateway.license.LicenseChecker.getInstance(this).start()
                 startForeground(NOTIFICATION_ID, buildNotification())
                 return START_STICKY
             }
@@ -39,6 +45,8 @@ class GatewayForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        ClubAutoMessageScheduler.getInstance(this).stop()
+        com.example.smsgateway.cloud.CloudSyncScheduler.getInstance(this).stop()
         stopLanServer()
         super.onDestroy()
     }

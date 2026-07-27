@@ -35,11 +35,12 @@ class CommunicationLog private constructor(
         error: String?,
         simLabel: String?,
         timestamp: Long = System.currentTimeMillis(),
+        channel: String = CHANNEL_SMS,
     ) {
         val phone = PhoneUtils.formatForDisplay(sender) ?: sender.trim()
         scope.launch {
             try {
-                insertFromProcessor(phone, inbound, reply, status, error, simLabel, timestamp)
+                insertFromProcessor(phone, inbound, reply, status, error, simLabel, timestamp, channel)
                 notifyListeners()
             } catch (e: Exception) {
                 LanTraceLog.e("CommsLog", "Failed to log communication from processor for $phone", e)
@@ -53,6 +54,7 @@ class CommunicationLog private constructor(
         status: String = STATUS_SENT,
         simLabel: String? = null,
         timestamp: Long = System.currentTimeMillis(),
+        channel: String = CHANNEL_SMS,
     ) {
         val normalizedPhone = PhoneUtils.formatForDisplay(phone) ?: phone.trim()
         scope.launch {
@@ -65,6 +67,7 @@ class CommunicationLog private constructor(
                         timestamp = timestamp,
                         status = status,
                         simLabel = simLabel,
+                        channel = channel,
                     ),
                 )
                 notifyListeners()
@@ -187,6 +190,7 @@ class CommunicationLog private constructor(
         error: String?,
         simLabel: String?,
         timestamp: Long,
+        channel: String,
     ) {
         val dao = database.communicationMessageDao()
         dao.insert(
@@ -197,6 +201,7 @@ class CommunicationLog private constructor(
                 timestamp = timestamp,
                 status = null,
                 simLabel = simLabel,
+                channel = channel,
             ),
         )
         when {
@@ -209,6 +214,7 @@ class CommunicationLog private constructor(
                         timestamp = timestamp + 1,
                         status = STATUS_SENT,
                         simLabel = simLabel,
+                        channel = channel,
                     ),
                 )
             }
@@ -221,6 +227,7 @@ class CommunicationLog private constructor(
                         timestamp = timestamp + 1,
                         status = status,
                         simLabel = simLabel,
+                        channel = channel,
                     ),
                 )
             }
@@ -281,6 +288,10 @@ class CommunicationLog private constructor(
         const val STATUS_SENT = "sent"
         const val STATUS_FAILED = "failed"
         const val STATUS_GATEWAY_ERROR = "gateway_error"
+        const val CHANNEL_SMS = "sms"
+        const val CHANNEL_RUBIKA = "rubika"
+        const val CHANNEL_TELEGRAM = "telegram"
+        const val CHANNEL_BALE = "bale"
         private const val CRM_REMINDER_MARKER = "[CRM completion reminder]"
         private const val FAILED_REPLY_BODY = "ارسال پاسخ ناموفق"
         private const val DEFAULT_UI_LIMIT = 50

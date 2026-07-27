@@ -1,10 +1,15 @@
 package com.example.smsgateway
 
 import com.example.smsgateway.data.GatewayDatabase
+import com.example.smsgateway.data.SerialEntity
+import com.example.smsgateway.data.SerialGroupEntity
 import com.example.smsgateway.data.SyncEventEntity
+import com.example.smsgateway.data.SyncOutboxEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
+import java.util.UUID
 
 class SyncEventWriter(
     private val database: GatewayDatabase,
@@ -17,6 +22,7 @@ class SyncEventWriter(
         km: Int? = null,
     ) = withContext(Dispatchers.IO) {
         insertEvent(TYPE_REGISTERED, buildRegistrationPayload(serial, phone, date, city, km))
+        enqueueSerialCloud(serial, phone, date, city, km)
     }
 
     suspend fun recordRegistrationUpdated(
@@ -27,6 +33,138 @@ class SyncEventWriter(
         km: Int?,
     ) = withContext(Dispatchers.IO) {
         insertEvent(TYPE_REGISTRATION_UPDATED, buildRegistrationPayload(serial, phone, date, city, km))
+        enqueueSerialCloud(serial, phone, date, city, km)
+    }
+
+    private suspend fun enqueueSerialCloud(
+        serial: String,
+        phone: String,
+        date: String,
+        city: String?,
+        km: Int?,
+    ) {
+        val now = System.currentTimeMillis()
+        database.serialDao().touchSyncUpdatedMs(serial, now)
+        val row = database.serialDao().findBySerial(serial)
+        val group = row?.groupId?.let { database.serialGroupDao().findById(it) }
+        val payload = JSONObject().apply {
+            put("serial", serial)
+            put("phone", phone)
+            put("dateJalali", date)
+            if (city != null) put("city", city)
+            if (km != null) put("km", km)
+            if (row?.groupId != null) put("localGroupId", row.groupId)
+            if (group?.syncOriginGroupId != null) put("syncOriginGroupId", group.syncOriginGroupId)
+            if (row?.registrationSource != null) put("regSource", row.registrationSource)
+            if (!group?.category.isNullOrBlank()) put("category", group!!.category)
+            put("syncUpdatedMs", now)
+        }
+        insertOutbox(TYPE_SERIAL_UPSERT, payload, now)
+    }
+
+    /**
+     * After local inventory create/extend: push group metadata + unused serials in batches.
+     */
+    suspend fun enqueueInventoryForGroup(groupId: Long, serialsFilter: List<String>? = null) =
+        withContext(Dispatchers.IO) {
+            val group = database.serialGroupDao().findById(groupId) ?: return@withContext
+            enqueueGroupUpsert(group)
+            if (serialsFilter != null) {
+                val serials = serialsFilter.mapNotNull { database.serialDao().findBySerial(it) }
+                enqueueSerialBatches(serials, group)
+                return@withContext
+            }
+            var offset = 0
+            while (true) {
+                val page = database.serialDao().listByGroupIdPaged(
+                    groupId,
+                    SERIAL_BATCH_SIZE,
+                    offset,
+                )
+                if (page.isEmpty()) break
+                enqueueSerialBatches(page, group)
+                offset += page.size
+                if (page.size < SERIAL_BATCH_SIZE) break
+            }
+        }
+
+    suspend fun enqueueGroupUpsert(group: SerialGroupEntity) = withContext(Dispatchers.IO) {
+        val now = if (group.syncUpdatedMs > 0) group.syncUpdatedMs else System.currentTimeMillis()
+        val payload = JSONObject().apply {
+            put("localGroupId", group.id)
+            if (group.syncOriginGroupId != null) put("syncOriginGroupId", group.syncOriginGroupId)
+            put("prefix", group.prefix)
+            put("startNumber", group.startNumber)
+            put("endNumber", group.endNumber)
+            put("padWidth", group.padWidth)
+            put("description", group.description)
+            put("score", group.score)
+            put("category", group.category)
+            put("generationMode", group.generationMode)
+            put("warrantyMonths", group.warrantyMonths)
+            put("warrantyKm", group.warrantyKm)
+            put("imageVerificationRequired", group.imageVerificationRequired)
+            put("createdAt", group.createdAt)
+            put("syncUpdatedMs", now)
+        }
+        insertOutbox(TYPE_GROUP_UPSERT, payload, now)
+    }
+
+    suspend fun enqueueGroupDelete(group: SerialGroupEntity) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        val payload = JSONObject().apply {
+            put("localGroupId", group.id)
+            if (group.syncOriginGroupId != null) put("syncOriginGroupId", group.syncOriginGroupId)
+            put("syncUpdatedMs", now)
+        }
+        insertOutbox(TYPE_GROUP_DELETE, payload, now)
+    }
+
+    private suspend fun enqueueSerialBatches(
+        serials: List<SerialEntity>,
+        group: SerialGroupEntity,
+    ) {
+        if (serials.isEmpty()) return
+        val now = System.currentTimeMillis()
+        serials.chunked(SERIAL_BATCH_SIZE).forEach { chunk ->
+            val arr = JSONArray()
+            for (s in chunk) {
+                val syncMs = if (s.syncUpdatedMs > 0) s.syncUpdatedMs else now
+                arr.put(
+                    JSONObject().apply {
+                        put("serial", s.serial)
+                        put("phone", s.phone)
+                        put("city", s.city)
+                        put("km", s.km)
+                        put("dateJalali", s.date)
+                        put("regSource", s.registrationSource)
+                        put("localGroupId", group.id)
+                        if (group.syncOriginGroupId != null) {
+                            put("syncOriginGroupId", group.syncOriginGroupId)
+                        }
+                        put("category", group.category)
+                        put("syncUpdatedMs", syncMs)
+                    },
+                )
+            }
+            val payload = JSONObject()
+                .put("serials", arr)
+                .put("localGroupId", group.id)
+                .put("category", group.category)
+                .put("syncUpdatedMs", now)
+            insertOutbox(TYPE_SERIAL_BATCH_UPSERT, payload, now)
+        }
+    }
+
+    private suspend fun insertOutbox(type: String, payload: JSONObject, createdAt: Long) {
+        database.syncOutboxDao().insert(
+            SyncOutboxEntity(
+                eventId = UUID.randomUUID().toString(),
+                type = type,
+                payloadJson = payload.toString(),
+                createdAt = createdAt,
+            ),
+        )
     }
 
     private suspend fun insertEvent(type: String, payload: String) {
@@ -62,11 +200,45 @@ class SyncEventWriter(
             put("skipped", skipped)
             put("total", total)
             put("at", at)
-        }.toString()
-        database.syncEventDao().insert(
-            SyncEventEntity(type = TYPE_SERIALS_ADDED, payload = payload, at = at),
-        )
-        pruneOldEvents()
+            put("message", "افزودن $inserted سریال (تکراری: $skipped)")
+        }
+        insertEvent(TYPE_SERIALS_ADDED, payload.toString())
+        enqueueDashboardActivity(TYPE_SERIALS_ADDED, payload)
+    }
+
+    /**
+     * Generic dashboard / recent-events entry (photo review, bot connect, etc.).
+     * Written locally for LAN CRM and pushed to remote MySQL activity log.
+     */
+    suspend fun recordDashboardEvent(
+        type: String,
+        message: String,
+        extra: Map<String, Any?> = emptyMap(),
+    ) = withContext(Dispatchers.IO) {
+        val at = System.currentTimeMillis()
+        val payload = JSONObject().apply {
+            put("message", message)
+            put("at", at)
+            for ((k, v) in extra) {
+                when (v) {
+                    null -> Unit
+                    is Number -> put(k, v)
+                    is Boolean -> put(k, v)
+                    else -> put(k, v.toString())
+                }
+            }
+        }
+        insertEvent(type, payload.toString())
+        enqueueDashboardActivity(type, payload)
+    }
+
+    private suspend fun enqueueDashboardActivity(type: String, payload: JSONObject) {
+        val now = System.currentTimeMillis()
+        val body = JSONObject()
+            .put("type", type)
+            .put("payload", payload)
+            .put("at", payload.optLong("at", now))
+        insertOutbox("dashboard_activity", body, now)
     }
 
     private suspend fun pruneOldEvents() {
@@ -78,6 +250,17 @@ class SyncEventWriter(
         const val TYPE_REGISTERED = "registered"
         const val TYPE_REGISTRATION_UPDATED = "registration_updated"
         const val TYPE_SERIALS_ADDED = "serials_added"
+        const val TYPE_PHOTO_APPROVED = "photo_approved"
+        const val TYPE_PHOTO_REJECTED = "photo_rejected"
+        const val TYPE_BOT_CONNECTED = "bot_connected"
+        const val TYPE_BOT_DISCONNECTED = "bot_disconnected"
+
+        const val TYPE_SERIAL_UPSERT = "serial_upsert"
+        const val TYPE_SERIAL_BATCH_UPSERT = "serial_batch_upsert"
+        const val TYPE_GROUP_UPSERT = "group_upsert"
+        const val TYPE_GROUP_DELETE = "group_delete"
+
+        private const val SERIAL_BATCH_SIZE = 200
         private const val RETENTION_MS = 7L * 24 * 60 * 60 * 1000
 
         @Volatile

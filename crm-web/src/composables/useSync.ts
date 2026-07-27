@@ -1,6 +1,6 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { fetchSync, getSyncCursor, setSyncCursor } from '@/api/client'
-import type { Stats, SyncChange } from '@/api/types'
+import type { SimQuotaStatus, Stats, SyncChange } from '@/api/types'
 import { formatPhoneForDisplay } from '@/utils/formatPhone'
 
 export interface ToastMessage {
@@ -15,6 +15,7 @@ function prependChanges(existing: SyncChange[], incoming: SyncChange[]): SyncCha
 export function useSync(options: { intervalMs?: number; enabled?: () => boolean } = {}) {
   const intervalMs = options.intervalMs ?? 1000
   const stats = ref<Stats>({ total: 0, unused: 0, registered: 0 })
+  const sims = ref<SimQuotaStatus[]>([])
   const changes = ref<SyncChange[]>([])
   const connected = ref(true)
   const cursor = ref(0)
@@ -52,6 +53,36 @@ export function useSync(options: { intervalMs?: number; enabled?: () => boolean 
           `سریال اضافه شد: ${change.inserted ?? 0} مورد`,
           `added-${change.at}`,
         )
+      } else if (change.type === 'serials_removed') {
+        pushToast(
+          `سریال حذف شد: ${change.removed ?? 0} مورد`,
+          `removed-${change.at}`,
+        )
+      } else if (change.type === 'photo_approved' || change.type === 'photo_rejected') {
+        pushToast(
+          change.message || (change.type === 'photo_approved' ? 'تأیید عکس' : 'رد عکس'),
+          `${change.type}-${change.serial ?? ''}-${change.at}`,
+        )
+      } else if (change.type === 'bot_connected' || change.type === 'bot_disconnected') {
+        pushToast(
+          change.message || change.type,
+          `${change.type}-${change.key ?? ''}-${change.at}`,
+        )
+      } else if (change.type === 'settings_changed') {
+        pushToast(
+          change.message || 'تنظیمات ذخیره شد',
+          `settings-${change.key ?? ''}-${change.at}`,
+        )
+      } else if (
+        change.type === 'club_auto_created' ||
+        change.type === 'club_auto_updated' ||
+        change.type === 'club_auto_deleted' ||
+        change.type === 'club_auto_run'
+      ) {
+        pushToast(
+          change.message || 'پیام خودکار باشگاه',
+          `${change.type}-${change.ruleId ?? ''}-${change.at}`,
+        )
       }
     }
   }
@@ -61,6 +92,7 @@ export function useSync(options: { intervalMs?: number; enabled?: () => boolean 
       const bootstrap = await fetchSync(0)
       connected.value = true
       stats.value = bootstrap.stats
+      sims.value = bootstrap.sims ?? []
       changes.value = prependChanges([], bootstrap.changes)
 
       let storedCursor = getSyncCursor()
@@ -94,6 +126,7 @@ export function useSync(options: { intervalMs?: number; enabled?: () => boolean 
       connected.value = true
       backoffMs = intervalMs
       stats.value = response.stats
+      sims.value = response.sims ?? []
       cursor.value = response.cursor
       setSyncCursor(response.cursor)
       if (response.changes.length > 0) {
@@ -125,5 +158,5 @@ export function useSync(options: { intervalMs?: number; enabled?: () => boolean 
     if (timer) clearTimeout(timer)
   })
 
-  return { stats, changes, connected, toasts, cursor }
+  return { stats, sims, changes, connected, toasts, cursor }
 }

@@ -1,0 +1,11 @@
+{
+    "generated_at": "2026-06-20T02:23:37+03:30",
+    "dry_run": false,
+    "duplicate_serial_count": 11501,
+    "rows_deleted_count": 11501,
+    "progress_file": "deduplicate-old-serials-progress.json",
+    "actions_log_file": "deduplicate-old-serials-actions.jsonl",
+    "report_file": "deduplicate-old-serials-report.json",
+    "started_at": "2026-06-20T01:46:48+03:30",
+    "finished_at": "2026-06-20T02:23:37+03:30"
+}

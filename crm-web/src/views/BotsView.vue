@@ -4,6 +4,7 @@ import NavBar from '@/components/NavBar.vue'
 const botTabs = [
   { to: '/bots/rubika', label: 'روبیکا' },
   { to: '/bots/telegram', label: 'تلگرام' },
+  { to: '/bots/bale', label: 'بله' },
 ]
 </script>
 

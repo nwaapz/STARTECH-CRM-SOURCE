@@ -34,6 +34,8 @@ object SimCardHelper {
                     subscriptionId = info.subscriptionId,
                     slotIndex = info.simSlotIndex,
                     displayName = buildSimLabel(info.simSlotIndex, info.displayName?.toString()),
+                    fingerprint = fingerprintForSubscriptionInfo(info),
+                    lineNumber = info.number?.takeIf { it.isNotBlank() },
                 )
             }.sortedBy { it.slotIndex }
         }
@@ -50,8 +52,42 @@ object SimCardHelper {
                 subscriptionId = subId,
                 slotIndex = slot,
                 displayName = buildSimLabel(slot, null),
+                fingerprint = "slot:$slot",
+                lineNumber = null,
             )
         }
+    }
+
+    fun fingerprintForSubscription(context: Context, subscriptionOrSyntheticId: Int): String {
+        val resolved = resolveSubscriptionId(context, subscriptionOrSyntheticId)
+        val subscriptionManager = context.getSystemService(SubscriptionManager::class.java)
+        val info = subscriptionManager?.activeSubscriptionInfoList
+            ?.firstOrNull { it.subscriptionId == resolved }
+        if (info != null) return fingerprintForSubscriptionInfo(info)
+        if (subscriptionOrSyntheticId < 0) {
+            val slot = slotIndexFromSyntheticId(subscriptionOrSyntheticId)
+            if (slot != null) return "slot:$slot"
+        }
+        return "sub:$resolved"
+    }
+
+    @Suppress("DEPRECATION")
+    private fun fingerprintForSubscriptionInfo(info: android.telephony.SubscriptionInfo): String {
+        val icc = try {
+            info.iccId?.takeIf { it.isNotBlank() }
+        } catch (_: SecurityException) {
+            null
+        }
+        if (!icc.isNullOrBlank()) return "icc:$icc"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val cardId = try {
+                info.cardId
+            } catch (_: Exception) {
+                -1
+            }
+            if (cardId >= 0) return "card:$cardId"
+        }
+        return "sub:${info.subscriptionId}:slot:${info.simSlotIndex}"
     }
 
     /** Real subscription IDs and synthetic slot IDs that refer to the same SIM. */

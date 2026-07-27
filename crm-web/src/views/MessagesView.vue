@@ -11,6 +11,15 @@ const success = ref('')
 const messages = ref<SmsMessageDefinition[]>([])
 
 const SAMPLE_VALUES: Record<string, Record<string, string>> = {
+  reply_valid: { '@1': '6 ماه یا 60000 کیلومتر' },
+  serial_not_found: { '@1': ' ثبت و استعلام آنلاین: …' },
+  serial_already_used: { '@1': ' ثبت و استعلام آنلاین: …' },
+  empty_serial: { '@1': ' ثبت و استعلام آنلاین: …' },
+  processing_error: { '@1': ' ثبت و استعلام آنلاین: …' },
+  registration_session_missing: { '@1': ' ثبت و استعلام آنلاین: …' },
+  digit_serial_hint: { '@1': ' ثبت و استعلام آنلاین: …' },
+  invalid_serial_format: { '@1': ' ثبت و استعلام آنلاین: …' },
+  client_prompt_after_serial: { '@1': 'تبریز', '@2': '3350' },
   step_prompt_field: { '@1': 'شهر' },
   step_prompt_city_km: { '@1': 'تبریز', '@2': '3350' },
   combined_format_error: { '@1': 'M100', '@2': 'تبریز', '@3': '3350' },
@@ -91,7 +100,9 @@ onMounted(loadMessages)
     <div class="card">
       <h1>پیام‌های مشتری</h1>
       <p class="hint">
-        متن پیامک‌های ارسالی به مشتری را ویرایش کنید. برای مقادیر پویا از @1، @2 و … استفاده کنید.
+        متن همه پیامک‌های سامانه به کاربر را اینجا تنظیم کنید — از جمله پیام اول و دوم فروشنده،
+        مشتری نهایی، خطاها و یادآوری‌ها. برای مقادیر پویا از @1، @2 و … استفاده کنید (راهنمای هر
+        پیام زیر جعبه متن آمده است).
       </p>
 
       <p v-if="loading">در حال بارگذاری…</p>

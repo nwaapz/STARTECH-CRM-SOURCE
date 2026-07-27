@@ -4,6 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Chat
@@ -31,9 +33,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.LayoutDirection
+import com.example.smsgateway.BalePoller
 import com.example.smsgateway.RubikaPoller
 import com.example.smsgateway.TelegramPoller
+import com.example.smsgateway.ui.BaleScreen
 import com.example.smsgateway.ui.GatewayScreen
+import com.example.smsgateway.ui.LicenseLockOverlay
 import com.example.smsgateway.ui.SerialGenerationScreen
 import com.example.smsgateway.ui.RubikaScreen
 import com.example.smsgateway.ui.TelegramScreen
@@ -61,6 +66,7 @@ private enum class AppTab(val titleRes: Int) {
     Messages(R.string.tab_messages),
     Rubika(R.string.tab_rubika),
     Telegram(R.string.tab_telegram),
+    Bale(R.string.tab_bale),
     Settings(R.string.tab_settings),
 }
 
@@ -78,76 +84,89 @@ fun GatewayApp() {
     }
 
     LaunchedEffect(Unit) {
-        if (settingsStore.isRubikaBotActive()) {
+        val licenseOk = com.example.smsgateway.license.LicenseGate.allowsOperationalUse(context)
+        if (licenseOk && settingsStore.isRubikaBotActive()) {
             RubikaPoller.getInstance(context).start()
         }
-        if (settingsStore.isTelegramBotActive()) {
+        if (licenseOk && settingsStore.isTelegramBotActive()) {
             TelegramPoller.getInstance(context).start()
+        }
+        if (licenseOk && settingsStore.isBaleBotActive()) {
+            BalePoller.getInstance(context).start()
         }
     }
 
     val tabs = AppTab.entries
     val currentTab = tabs[selectedTab]
 
-    Scaffold(
-        topBar = {
-            TopAppBar(title = { Text(stringResource(currentTab.titleRes)) })
-        },
-        bottomBar = {
-            NavigationBar {
-                tabs.forEachIndexed { index, tab ->
-                    NavigationBarItem(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        icon = {
-                            Icon(
-                                imageVector = when (tab) {
-                                    AppTab.Gateway -> Icons.Filled.Message
-                                    AppTab.SerialGeneration -> Icons.Filled.Build
-                                    AppTab.Messages -> Icons.Filled.Chat
-                                    AppTab.Rubika -> Icons.Filled.SmartToy
-                                    AppTab.Telegram -> Icons.Filled.Send
-                                    AppTab.Settings -> Icons.Filled.Settings
-                                },
-                                contentDescription = stringResource(tab.titleRes),
-                            )
-                        },
-                        label = {
-                            Text(
-                                text = stringResource(tab.titleRes),
-                                style = MaterialTheme.typography.labelSmall,
-                            )
-                        },
-                    )
+    Box(modifier = Modifier.fillMaxSize()) {
+        Scaffold(
+            topBar = {
+                TopAppBar(title = { Text(stringResource(currentTab.titleRes)) })
+            },
+            bottomBar = {
+                NavigationBar {
+                    tabs.forEachIndexed { index, tab ->
+                        NavigationBarItem(
+                            selected = selectedTab == index,
+                            onClick = { selectedTab = index },
+                            icon = {
+                                Icon(
+                                    imageVector = when (tab) {
+                                        AppTab.Gateway -> Icons.Filled.Message
+                                        AppTab.SerialGeneration -> Icons.Filled.Build
+                                        AppTab.Messages -> Icons.Filled.Chat
+                                        AppTab.Rubika -> Icons.Filled.SmartToy
+                                        AppTab.Telegram -> Icons.Filled.Send
+                                        AppTab.Bale -> Icons.Filled.Chat
+                                        AppTab.Settings -> Icons.Filled.Settings
+                                    },
+                                    contentDescription = stringResource(tab.titleRes),
+                                )
+                            },
+                            label = {
+                                Text(
+                                    text = stringResource(tab.titleRes),
+                                    style = MaterialTheme.typography.labelSmall,
+                                )
+                            },
+                        )
+                    }
                 }
+            },
+        ) { innerPadding ->
+            when (currentTab) {
+                AppTab.Gateway -> GatewayScreen(
+                    settingsStore = settingsStore,
+                    communicationLog = communicationLog,
+                    modifier = Modifier.padding(innerPadding),
+                )
+                AppTab.SerialGeneration -> SerialGenerationScreen(
+                    modifier = Modifier.padding(innerPadding),
+                )
+                AppTab.Messages -> SmsMessagesScreen(
+                    settingsStore = settingsStore,
+                    modifier = Modifier.padding(innerPadding),
+                )
+                AppTab.Rubika -> RubikaScreen(
+                    settingsStore = settingsStore,
+                    modifier = Modifier.padding(innerPadding),
+                )
+                AppTab.Telegram -> TelegramScreen(
+                    settingsStore = settingsStore,
+                    modifier = Modifier.padding(innerPadding),
+                )
+                AppTab.Bale -> BaleScreen(
+                    settingsStore = settingsStore,
+                    modifier = Modifier.padding(innerPadding),
+                )
+                AppTab.Settings -> SettingsScreen(
+                    settingsStore = settingsStore,
+                    modifier = Modifier.padding(innerPadding),
+                )
             }
-        },
-    ) { innerPadding ->
-        when (currentTab) {
-            AppTab.Gateway -> GatewayScreen(
-                settingsStore = settingsStore,
-                communicationLog = communicationLog,
-                modifier = Modifier.padding(innerPadding),
-            )
-            AppTab.SerialGeneration -> SerialGenerationScreen(
-                modifier = Modifier.padding(innerPadding),
-            )
-            AppTab.Messages -> SmsMessagesScreen(
-                settingsStore = settingsStore,
-                modifier = Modifier.padding(innerPadding),
-            )
-            AppTab.Rubika -> RubikaScreen(
-                settingsStore = settingsStore,
-                modifier = Modifier.padding(innerPadding),
-            )
-            AppTab.Telegram -> TelegramScreen(
-                settingsStore = settingsStore,
-                modifier = Modifier.padding(innerPadding),
-            )
-            AppTab.Settings -> SettingsScreen(
-                settingsStore = settingsStore,
-                modifier = Modifier.padding(innerPadding),
-            )
         }
+
+        LicenseLockOverlay()
     }
 }

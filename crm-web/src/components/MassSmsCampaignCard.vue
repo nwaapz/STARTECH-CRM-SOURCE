@@ -29,11 +29,29 @@ const actionLoading = ref(false)
 const deleteOpen = ref(false)
 const error = ref('')
 
+const processedCount = computed(
+  () =>
+    props.campaign.sentCount +
+    props.campaign.failedCount +
+    (props.campaign.skippedCount ?? 0),
+)
+
 const progressPercent = computed(() => {
   if (props.campaign.totalCount <= 0) return 0
-  return Math.round(
-    ((props.campaign.sentCount + props.campaign.failedCount) / props.campaign.totalCount) * 100,
-  )
+  return Math.round((processedCount.value / props.campaign.totalCount) * 100)
+})
+
+const channelLabel = computed(() => {
+  switch (props.campaign.channel) {
+    case 'rubika':
+      return 'ربات روبیکا'
+    case 'telegram':
+      return 'ربات تلگرام'
+    case 'bale':
+      return 'ربات بله'
+    default:
+      return 'پیامک'
+  }
 })
 
 const createdLabel = computed(() => {
@@ -156,6 +174,14 @@ async function confirmDelete() {
 
     <dl class="mass-sms-meta">
       <div>
+        <dt>کانال</dt>
+        <dd>{{ channelLabel }}</dd>
+      </div>
+      <div v-if="campaign.mediaFileName">
+        <dt>پیوست</dt>
+        <dd>{{ campaign.mediaFileName }}</dd>
+      </div>
+      <div>
         <dt>مخاطب</dt>
         <dd>{{ audienceLabel(campaign.audienceType) }}</dd>
       </div>
@@ -190,7 +216,7 @@ async function confirmDelete() {
         <div class="progress-fill" :style="{ width: `${progressPercent}%` }" />
       </div>
       <span class="progress-label">
-        {{ campaign.sentCount + campaign.failedCount }} / {{ campaign.totalCount }}
+        {{ processedCount }} / {{ campaign.totalCount }}
         ({{ progressPercent }}%)
       </span>
     </div>
@@ -203,6 +229,10 @@ async function confirmDelete() {
       <div>
         <dt>ناموفق</dt>
         <dd class="error">{{ campaign.failedCount }}</dd>
+      </div>
+      <div v-if="campaign.channel && campaign.channel !== 'sms'">
+        <dt>رد‌شده</dt>
+        <dd>{{ campaign.skippedCount ?? 0 }}</dd>
       </div>
       <div>
         <dt>باقی‌مانده</dt>

@@ -1,15 +1,15 @@
 <resources>
-    <string name="app_name">درگاه ایران</string>
+    <string name="app_name">Payamesh</string>
     <string name="splash_company">صنعت رامش آژند</string>
     <string name="splash_phone">09902648065</string>
 
-    <string name="login_title">ورود به درگاه ایران</string>
+    <string name="login_title">ورود به Payamesh</string>
     <string name="login_password_hint">رمز عبور</string>
     <string name="login_button">ورود</string>
     <string name="login_error">رمز عبور اشتباه است</string>
 
-    <string name="notification_channel_name">درگاه ایران</string>
-    <string name="notification_title">درگاه ایران</string>
+    <string name="notification_channel_name">Payamesh</string>
+    <string name="notification_title">Payamesh</string>
     <string name="notification_text">در حال دریافت پیامک‌ها</string>
 
     <string name="gateway_running">سرویس فعال است</string>
@@ -42,7 +42,12 @@
     <string name="status_failed">ناموفق</string>
 
     <string name="sim_selection_title">سیم‌کارت درگاه</string>
-    <string name="sim_selection_hint">فقط پیام‌های سیم‌کارت‌های انتخاب‌شده پردازش می‌شوند. پاسخ از همان سیم‌کارت ارسال می‌شود.</string>
+    <string name="sim_selection_hint">فقط پیام‌های سیم‌کارت‌های انتخاب‌شده (اصلی) پردازش می‌شوند. پاسخ از همان سیم‌کارت ارسال می‌شود. در صورت فعال بودن پشتیبان، سیم‌کارت‌های دیگر نیز دریافت و ارسال می‌کنند.</string>
+    <string name="sim_backup_enabled">استفاده از سیم‌کارت‌های دیگر به‌عنوان پشتیبان</string>
+    <string name="sim_daily_limit_label">سقف ارسال روزانه هر سیم‌کارت</string>
+    <string name="sim_usage_format">%1$d/%2$d</string>
+    <string name="sim_role_primary">اصلی</string>
+    <string name="sim_role_backup">پشتیبان</string>
     <string name="sim_unknown">سیم‌کارت پیش‌فرض</string>
     <string name="log_sim">سیم‌کارت:</string>
     <string name="sim_must_keep_one">حداقل یک سیم‌کارت باید فعال باشد.</string>
@@ -52,6 +57,7 @@
     <string name="tab_messages">تنظیمات پیام های ارسالی</string>
     <string name="tab_rubika">روبیکا</string>
     <string name="tab_telegram">تلگرام</string>
+    <string name="tab_bale">بله</string>
     <string name="tab_settings">تنظیمات</string>
 
     <string name="rubika_setup_title">اتصال ربات روبیکا</string>
@@ -85,6 +91,22 @@
     <string name="telegram_phone_request_message">لطفاً برای ادامه، شماره تماس خود را با دکمه زیر به اشتراک بگذارید.</string>
     <string name="telegram_phone_request_button">ارسال شماره تماس</string>
     <string name="telegram_phone_reminder_message">برای ادامه، لطفاً شماره تماس خود را با دکمه زیر ارسال کنید.</string>
+
+    <string name="bale_setup_title">اتصال ربات بله</string>
+    <string name="bale_setup_hint">توکن ربات را از BotFather وارد کنید و دکمه اتصال را بزنید.</string>
+    <string name="bale_token_hint">توکن ربات</string>
+    <string name="bale_connect">اتصال</string>
+    <string name="bale_connect_error">اتصال به ربات ناموفق بود</string>
+    <string name="bale_connected">ربات متصل است</string>
+    <string name="bale_inactive">ربات غیرفعال</string>
+    <string name="bale_disconnect">قطع اتصال</string>
+    <string name="bale_chats_title">پیام‌های دریافتی</string>
+    <string name="bale_polling">در حال دریافت</string>
+    <string name="bale_no_messages">هنوز پیامی دریافت نشده</string>
+    <string name="bale_sender_phone">شماره: %1$s</string>
+    <string name="bale_phone_request_message">لطفاً برای ادامه، شماره تماس خود را با دکمه زیر به اشتراک بگذارید.</string>
+    <string name="bale_phone_request_button">ارسال شماره تماس</string>
+    <string name="bale_phone_reminder_message">برای ادامه، لطفاً شماره تماس خود را با دکمه زیر ارسال کنید.</string>
 
     <string name="messages_screen_hint">متن پیامک‌های ارسالی به مشتری را ویرایش کنید. برای مقادیر پویا از @1، @2 و … استفاده کنید.</string>
     <string name="messages_save">ذخیره پیام‌ها</string>
@@ -121,6 +143,14 @@
     <string name="serial_db_unused">سریال‌های استفاده‌نشده: %1$d</string>
     <string name="serial_group_description_label">توضیحات گروه (اختیاری)</string>
     <string name="serial_group_score_label">امتیاز قرعه‌کشی</string>
+    <string name="serial_group_category_label">دسته سریال</string>
+    <string name="serial_group_category_end_user">مشتری نهایی</string>
+    <string name="serial_group_category_seller">فروشنده به مشتری نهایی</string>
+    <string name="serial_group_category_value">دسته: %1$s</string>
+    <string name="serial_group_warranty_months_label">مدت گارانتی (ماه)</string>
+    <string name="serial_group_warranty_km_label">گارانتی کیلومتر</string>
+    <string name="serial_group_warranty_hint">حداقل یکی از مدت گارانتی یا کیلومتر گارانتی الزامی است</string>
+    <string name="serial_group_warranty_value">گارانتی: %1$s</string>
     <string name="serial_groups_title">گروه‌های تولید شده</string>
     <string name="serial_groups_empty">هنوز گروهی ثبت نشده است</string>
     <string name="serial_group_score">امتیاز: %1$d</string>
@@ -136,7 +166,11 @@
     <string name="serial_group_created_at">ایجاد: %1$s</string>
     <string name="serial_group_no_description">بدون توضیحات</string>
     <string name="serial_group_edit_button">ویرایش</string>
-    <string name="serial_group_save_metadata">ذخیره توضیحات و امتیاز</string>
+    <string name="serial_group_export_excel">خروجی اکسل</string>
+    <string name="serial_group_exporting">در حال خروجی...</string>
+    <string name="serial_group_export_empty">سریالی برای خروجی وجود ندارد</string>
+    <string name="serial_group_export_chooser">اشتراک‌گذاری فایل اکسل</string>
+    <string name="serial_group_save_metadata">ذخیره تغییرات</string>
     <string name="serial_group_saving">در حال ذخیره...</string>
     <string name="serial_group_extend_title">توسعه بازه</string>
     <string name="serial_group_current_range">بازه فعلی: %1$d تا %2$d</string>
@@ -188,6 +222,18 @@
     <string name="settings_lan_host_override_active">آدرس سفارشی فعال است</string>
     <string name="settings_app_version">نسخه %1$s</string>
 
+    <string name="settings_sms_engine_title">موتور ارسال پیامک</string>
+    <string name="settings_sms_engine_hint">انتخاب کنید پیامک‌ها از سیم‌کارت گوشی ارسال شوند یا از پنل ملی‌پیامک (مثل CRM سرور).</string>
+    <string name="settings_sms_engine_device">سیم‌کارت گوشی</string>
+    <string name="settings_sms_engine_device_hint">ارسال و دریافت مستقیم از سیم‌کارت دستگاه (حالت فعلی).</string>
+    <string name="settings_sms_engine_panel">پنل ملی‌پیامک</string>
+    <string name="settings_sms_engine_panel_hint">ارسال از طریق وب‌سرویس ملی‌پیامک؛ دریافت از پیامک فورواردشده پنل.</string>
+    <string name="settings_sms_engine_panel_inbound_note">سیم انتخاب‌شده باید پیامک‌های فورواردشده پنل (مثلاً از ۲۰۰۰۱۳۹۰) را دریافت کند. فرمت: متن پیام؛شماره مشتری یا متن:شماره</string>
+    <string name="settings_sms_engine_panel_username">نام کاربری پنل</string>
+    <string name="settings_sms_engine_panel_password">رمز عبور پنل</string>
+    <string name="settings_sms_engine_panel_sender">شماره خط ارسال (from)</string>
+    <string name="settings_sms_engine_panel_inbound_codes">شماره‌های فرستنده ورودی پنل</string>
+
     <string name="settings_sms_processing_title">پردازش پیامک ورودی</string>
     <string name="settings_sms_processing_hint">نحوه دریافت سریال، شهر و کیلومتر از مشتری را تنظیم کنید.</string>
     <string name="settings_sms_mode_serial_only">حالت ۱: فقط سریال</string>
@@ -210,4 +256,65 @@
     <string name="settings_sms_drag_hint">نگه دارید و بکشید</string>
     <string name="settings_sms_move_up">انتقال به بالا</string>
     <string name="settings_sms_move_down">انتقال به پایین</string>
+    <string name="bot_phone_confirmed_registered">شماره شما تأیید و در سیستم ثبت شد. ✅\nبرای ثبت گارانتی، سریال خود را ارسال کنید.</string>
+    <string name="bot_phone_confirmed_unregistered">شماره شما دریافت شد. ⚠️\nاین شماره هنوز در سیستم گارانتی ثبت نشده. برای ثبت گارانتی، سریال خود را ارسال کنید.</string>
+    <string name="bot_invite_message_default">برای استفاده از خدمات ما در این ربات، روی لینک زیر کلیک کنید:\n@1</string>
+    <string name="bot_menu_register_prompt">برای ثبت گارانتی، شماره سریال محصول را ارسال کنید.</string>
+    <string name="bot_menu_warranty_empty">هنوز سریال ثبت‌شده‌ای برای این شماره یافت نشد.</string>
+    <string name="bot_menu_warranty_header">وضعیت گارانتی شما:</string>
+    <string name="bot_menu_warranty_item">• سریال: %1$s\n  تاریخ ثبت: %2$s</string>
+    <string name="bot_menu_warranty_item_extra">• سریال: %1$s\n  تاریخ ثبت: %2$s\n  شهر: %3$s | کیلومتر: %4$s</string>
+    <string name="bot_menu_invite_friends_intro">لینک دعوت ربات را برای دوستان خود ارسال کنید:</string>
+    <string name="bot_invite_referral_code_note">دوستان شما برای ثبت به‌عنوان دعوت‌شده، این کد را به‌عنوان اولین پیام در ربات ارسال کنند:\n%1$s</string>
+    <string name="bot_menu_invite_referral_stats">امتیاز شما: %1$s\nتعداد دعوت مستقیم: %2$s\nبا هر خرید افرادی که دعوت می‌کنید (و افرادی که آن‌ها دعوت می‌کنند) امتیاز می‌گیرید.</string>
+    <string name="referral_award_notification">🎉 تبریک! یک خرید از زیرمجموعهٔ شما ثبت شد و %1$s امتیاز (سطح %2$s) دریافت کردید.\nمجموع امتیاز شما: %3$s</string>
+    <string name="bot_menu_my_score">⭐ امتیاز شما\n\nمجموع امتیاز: %1$s\nتعداد دعوت مستقیم: %2$s\nکد دعوت شما: %3$s\n\nبا دعوت دوستان و خرید آن‌ها (و زیرمجموعه‌هایشان) امتیاز بیشتری بگیرید.</string>
+    <string name="bot_start_welcome">به ربات خوش آمدید! 🌟\nاز منوی زیر می‌توانید گارانتی ثبت کنید، وضعیت گارانتی را ببینید، عکس محصول بفرستید یا دوستان خود را دعوت کنید.</string>
+    <string name="bot_menu_support">پشتیبانی مشتریان\nدر صورت نیاز به راهنمایی، با پشتیبانی تماس بگیرید یا پیام خود را همین‌جا ارسال کنید.</string>
+    <string name="bot_menu_help">راهنما\n۱) ابتدا شماره موبایل خود را تأیید کنید.\n۲) برای ثبت گارانتی، شماره سریال را ارسال کنید.\n۳) برای محصولات نیازمند تأیید عکس، از منوی «ارسال عکس محصول» استفاده کنید.\n۴) از منو می‌توانید وضعیت گارانتی، دعوت دوستان و پشتیبانی را ببینید.</string>
+    <string name="bot_photo_verify_none">سریالی که نیاز به ارسال عکس برای امتیاز داشته باشد یافت نشد.</string>
+    <string name="bot_photo_verify_pick_serial">کدام سریال را می‌خواهید عکس بفرستید؟ شماره ردیف یا خود سریال را ارسال کنید (یا «انصراف»).</string>
+    <string name="bot_photo_verify_pick_invalid">سریال معتبر نیست. لطفاً از فهرست انتخاب کنید یا «انصراف» بزنید.</string>
+    <string name="bot_photo_verify_send_photo">لطفاً عکس محصول مربوط به سریال %1$s را همین‌جا ارسال کنید. برای لغو، «انصراف» را بفرستید.</string>
+    <string name="bot_photo_verify_awaiting_photo">در انتظار عکس برای سریال %1$s هستید. عکس را ارسال کنید یا «انصراف» بزنید.</string>
+    <string name="bot_photo_verify_cancel">انصراف</string>
+    <string name="bot_photo_verify_cancelled">ارسال عکس لغو شد.</string>
+    <string name="bot_photo_verify_no_session">ابتدا از منو «ارسال عکس محصول» را انتخاب کنید.</string>
+    <string name="bot_photo_verify_pick_first">ابتدا سریال را از فهرست انتخاب کنید، سپس عکس را بفرستید.</string>
+    <string name="bot_photo_verify_serial_mismatch">این سریال متعلق به شماره شما نیست.</string>
+    <string name="bot_photo_verify_not_required">این سریال نیاز به تأیید عکس ندارد.</string>
+    <string name="bot_photo_verify_already_submitted">برای این سریال قبلاً عکس ارسال شده و در صف بررسی است یا تأیید شده.</string>
+    <string name="bot_photo_verify_download_failed">دریافت عکس ناموفق بود. لطفاً دوباره ارسال کنید.</string>
+    <string name="bot_photo_verify_received">عکس سریال %1$s دریافت شد و پس از تأیید ادمین، امتیاز اعمال می‌شود.</string>
+    <string name="bot_photo_verify_need_image">لطفاً یک عکس ارسال کنید (نه متن).</string>
+    <string name="bot_photo_verify_after_register">برای شرکت در قرعه‌کشی / دریافت امتیاز، لطفاً عکس محصول سریال %1$s را از منوی «ارسال عکس محصول» ارسال کنید.</string>
+    <string name="bot_photo_verify_sms_invite">سریال شما ثبت شد. برای دریافت امتیاز، عکس محصول را در ربات ارسال کنید:\n@1\nسپس از منو گزینه «ارسال عکس محصول» را بزنید.</string>
+    <string name="bot_photo_review_approved">عکس سریال %1$s تأیید شد و %2$s امتیاز برای شما ثبت گردید.</string>
+    <string name="bot_photo_review_rejected_unclear">عکس سریال %1$s رد شد: تصویر واضح نیست.\nلطفاً عکس واضح‌تری از محصول ارسال کنید.\nدر صورت نیاز از منوی «پشتیبانی» کمک بگیرید.</string>
+    <string name="bot_photo_review_rejected_not_related">عکس سریال %1$s رد شد: تصویر مربوط به این محصول نیست.\nلطفاً عکس خود محصول را ارسال کنید.\nدر صورت نیاز از منوی «پشتیبانی» کمک بگیرید.</string>
+    <string name="bot_photo_review_rejected_wrong_serial">عکس سریال %1$s رد شد: شماره سریال در تصویر با سریال ثبت‌شده مطابقت ندارد.\nلطفاً عکس صحیح را ارسال کنید.\nدر صورت نیاز از منوی «پشتیبانی» کمک بگیرید.</string>
+    <string name="bot_photo_review_rejected_other">عکس سریال %1$s رد شد.\nلطفاً دوباره عکس مناسب ارسال کنید یا از منوی «پشتیبانی» کمک بگیرید.</string>
+    <string name="bot_photo_review_rejected_other_custom">عکس سریال %1$s رد شد:\n%2$s\nدر صورت نیاز از منوی «پشتیبانی» کمک بگیرید.</string>
+    <string name="serial_group_image_verify_label">تأیید عکس محصول</string>
+    <string name="serial_group_image_verify_hint">پس از ثبت سریال، مشتری باید عکس محصول را بفرستد تا امتیاز پس از تأیید ادمین اعطا شود</string>
+    <string name="serial_group_image_verify_on">تأیید عکس: فعال</string>
+    <string name="serial_group_image_verify_off">تأیید عکس: غیرفعال</string>
+
+    <!-- License (lifetime seat; never imply paid subscription expiry) -->
+    <string name="license_section_title">مجوز استفاده</string>
+    <string name="license_state_never">در انتظار فعال‌سازی اولیه</string>
+    <string name="license_state_active">مجوز فعال</string>
+    <string name="license_state_grace">در حال بررسی مجدد (قطع ارتباط پیامکی)</string>
+    <string name="license_state_denied">شماره ثبت نشده یا باطل شده</string>
+    <string name="license_state_locked">نیاز به تأیید مجدد مجوز</string>
+    <string name="license_blocked_denied">این شماره در فهرست مجوزها نیست. با پشتیبانی تماس بگیرید.</string>
+    <string name="license_blocked_locked">تأیید مجوز لازم است. درگاه را روشن کنید تا پیامک بررسی ارسال شود.</string>
+    <string name="license_msisdn_label">شماره مجاز: %1$s</string>
+    <string name="license_check_now">بررسی مجدد مجوز</string>
+    <string name="license_check_sent">پیامک بررسی مجوز ارسال شد</string>
+    <string name="license_window_remaining">مهلت فعال‌سازی باقی‌مانده: %1$s</string>
+    <string name="license_grace_remaining">مهلت قطع ارتباط باقی‌مانده: %1$s</string>
+    <string name="license_lock_title">مجوز استفاده یافت نشد</string>
+    <string name="license_lock_message">شما نمی‌توانید قبل از خرید مجوز از این برنامه استفاده کنید.</string>
+    <string name="license_retry_verification">آزمایش مجدد تأیید مجوز</string>
 </resources>

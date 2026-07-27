@@ -14,7 +14,17 @@ class GatewayApi(private val settingsStore: SettingsStore) {
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 
-    data class GatewayResponse(val status: String, val reply: String)
+    data class GatewayResponse(
+        val status: String,
+        val reply: String,
+        val firstRegistration: Boolean = false,
+        val registrationSucceeded: Boolean = false,
+        /** True when the registered serial's group requires a product photo for score. */
+        val imageVerificationRequired: Boolean = false,
+        val registeredSerial: String? = null,
+        /** SIM that should send the reply (sticky / budget-aware). */
+        val replySubscriptionId: Int? = null,
+    )
 
     class GatewayException(message: String) : Exception(message)
 

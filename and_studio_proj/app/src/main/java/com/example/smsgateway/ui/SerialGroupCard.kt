@@ -8,9 +8,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -19,12 +22,17 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.smsgateway.R
 import com.example.smsgateway.SerialGenerator
+import com.example.smsgateway.SerialGroupCategory
+import com.example.smsgateway.SerialGroupExcelExporter
+import com.example.smsgateway.SerialGroupWarranty
 import kotlinx.coroutines.launch
 import java.text.DateFormat
 import java.util.Date
@@ -36,17 +44,31 @@ fun SerialGroupCard(
     onDelete: () -> Unit,
     onUpdated: () -> Unit,
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var editing by remember(group.id) { mutableStateOf(false) }
     var errorMessage by remember(group.id) { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
     var extending by remember { mutableStateOf(false) }
+    var exporting by remember { mutableStateOf(false) }
     var duplicateException by remember(group.id) {
         mutableStateOf<SerialGenerator.DuplicateSerialException?>(null)
     }
 
     var editDescription by remember(group.id) { mutableStateOf(group.description.orEmpty()) }
     var editScore by remember(group.id) { mutableStateOf(group.score.toString()) }
+    var editCategory by remember(group.id) {
+        mutableStateOf(SerialGroupCategory.normalizeOrDefault(group.category))
+    }
+    var editWarrantyMonths by remember(group.id) {
+        mutableStateOf(group.warrantyMonths?.toString().orEmpty())
+    }
+    var editWarrantyKm by remember(group.id) {
+        mutableStateOf(group.warrantyKm?.toString().orEmpty())
+    }
+    var editImageVerificationRequired by remember(group.id) {
+        mutableStateOf(group.imageVerificationRequired)
+    }
     var extendByCount by remember(group.id) { mutableStateOf(true) }
     var addBelow by remember(group.id) { mutableStateOf("") }
     var addAbove by remember(group.id) { mutableStateOf("") }
@@ -58,10 +80,29 @@ fun SerialGroupCard(
             .format(Date(group.createdAt))
     }
 
-    LaunchedEffect(group.description, group.score) {
+    val categoryLabel = stringResource(
+        if (group.category == SerialGroupCategory.SELLER_TO_END_USER) {
+            R.string.serial_group_category_seller
+        } else {
+            R.string.serial_group_category_end_user
+        },
+    )
+
+    LaunchedEffect(
+        group.description,
+        group.score,
+        group.category,
+        group.warrantyMonths,
+        group.warrantyKm,
+        group.imageVerificationRequired,
+    ) {
         if (!editing) {
             editDescription = group.description.orEmpty()
             editScore = group.score.toString()
+            editCategory = SerialGroupCategory.normalizeOrDefault(group.category)
+            editWarrantyMonths = group.warrantyMonths?.toString().orEmpty()
+            editWarrantyKm = group.warrantyKm?.toString().orEmpty()
+            editImageVerificationRequired = group.imageVerificationRequired
         }
     }
 
@@ -94,6 +135,28 @@ fun SerialGroupCard(
                 )
             }
 
+            Text(
+                text = stringResource(R.string.serial_group_category_value, categoryLabel),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = stringResource(
+                    R.string.serial_group_warranty_value,
+                    SerialGroupWarranty.formatFa(group.warrantyMonths, group.warrantyKm) ?: "—",
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                text = stringResource(
+                    if (group.imageVerificationRequired) {
+                        R.string.serial_group_image_verify_on
+                    } else {
+                        R.string.serial_group_image_verify_off
+                    },
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+
             if (!editing) {
                 if (group.description.isNullOrBlank()) {
                     Text(
@@ -116,9 +179,45 @@ fun SerialGroupCard(
                     OutlinedButton(onClick = { editing = true }, modifier = Modifier.weight(1f)) {
                         Text(stringResource(R.string.serial_group_edit_button))
                     }
-                    OutlinedButton(onClick = onDelete, modifier = Modifier.weight(1f)) {
-                        Text(stringResource(R.string.serial_group_delete_button))
+                    OutlinedButton(
+                        onClick = {
+                            exporting = true
+                            errorMessage = null
+                            scope.launch {
+                                runCatching {
+                                    val serials = generator.listSerialsForGroup(group.id)
+                                    if (serials.isEmpty()) {
+                                        errorMessage = context.getString(R.string.serial_group_export_empty)
+                                    } else {
+                                        SerialGroupExcelExporter.shareExcel(
+                                            context = context,
+                                            serials = serials,
+                                            filenameBase = group.rangeLabel,
+                                        )
+                                    }
+                                }.onFailure {
+                                    errorMessage = it.message
+                                }
+                                exporting = false
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !exporting && group.total > 0,
+                    ) {
+                        Text(
+                            if (exporting) {
+                                stringResource(R.string.serial_group_exporting)
+                            } else {
+                                stringResource(R.string.serial_group_export_excel)
+                            },
+                        )
                     }
+                }
+                OutlinedButton(onClick = onDelete, modifier = Modifier.fillMaxWidth()) {
+                    Text(stringResource(R.string.serial_group_delete_button))
+                }
+                errorMessage?.let {
+                    Text(text = it, color = MaterialTheme.colorScheme.error)
                 }
             } else {
                 OutlinedTextField(
@@ -136,6 +235,81 @@ fun SerialGroupCard(
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                 )
+                Text(
+                    text = stringResource(R.string.serial_group_category_label),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = editCategory == SerialGroupCategory.END_USER_CLIENT,
+                        onClick = { editCategory = SerialGroupCategory.END_USER_CLIENT },
+                        label = { Text(stringResource(R.string.serial_group_category_end_user)) },
+                    )
+                    FilterChip(
+                        selected = editCategory == SerialGroupCategory.SELLER_TO_END_USER,
+                        onClick = { editCategory = SerialGroupCategory.SELLER_TO_END_USER },
+                        label = { Text(stringResource(R.string.serial_group_category_seller)) },
+                    )
+                }
+                OutlinedTextField(
+                    value = editWarrantyMonths,
+                    onValueChange = { editWarrantyMonths = it.filter { ch -> ch.isDigit() } },
+                    label = { Text(stringResource(R.string.serial_group_warranty_months_label)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+                OutlinedTextField(
+                    value = editWarrantyKm,
+                    onValueChange = { editWarrantyKm = it.filter { ch -> ch.isDigit() } },
+                    label = { Text(stringResource(R.string.serial_group_warranty_km_label)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                )
+                Text(
+                    text = stringResource(R.string.serial_group_warranty_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = if (editImageVerificationRequired) 2.dp else 1.dp,
+                    color = if (editImageVerificationRequired) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.serial_group_image_verify_label),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                text = stringResource(R.string.serial_group_image_verify_hint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = editImageVerificationRequired,
+                            onCheckedChange = { editImageVerificationRequired = it },
+                        )
+                    }
+                }
                 Button(
                     onClick = {
                         saving = true
@@ -147,6 +321,10 @@ fun SerialGroupCard(
                                     SerialGenerator.UpdateGroupRequest(
                                         description = editDescription,
                                         score = editScore.toIntOrNull()?.coerceAtLeast(1) ?: 1,
+                                        category = editCategory,
+                                        warrantyMonths = editWarrantyMonths.toIntOrNull()?.takeIf { it > 0 },
+                                        warrantyKm = editWarrantyKm.toIntOrNull()?.takeIf { it > 0 },
+                                        imageVerificationRequired = editImageVerificationRequired,
                                     ),
                                 )
                             }.onSuccess {

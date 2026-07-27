@@ -17,10 +17,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -41,11 +43,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.smsgateway.GatewayForegroundService
+import com.example.smsgateway.PhoneUtils
 import com.example.smsgateway.R
 import com.example.smsgateway.SerialGenerator
 import com.example.smsgateway.SettingsStore
 import com.example.smsgateway.VerificationMode
 import com.example.smsgateway.data.GatewayDatabase
+import com.example.smsgateway.license.LicenseState
 import com.example.smsgateway.lan.LanHttpServer
 import com.example.smsgateway.lan.LanNetworkUtils
 import com.example.smsgateway.lan.LanQrCodeImage
@@ -62,6 +66,10 @@ fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val generator = remember { SerialGenerator(GatewayDatabase.getInstance(context)) }
+
+    var licenseSummary by remember {
+        mutableStateOf(com.example.smsgateway.license.LicenseStore.getInstance(context).statusSummary())
+    }
 
     var verificationMode by remember { mutableStateOf(settingsStore.getVerificationMode()) }
     var lanEnabled by remember { mutableStateOf(settingsStore.isLanServerEnabled()) }
@@ -143,6 +151,75 @@ fun SettingsScreen(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.license_section_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = licenseStateLabel(licenseSummary.state),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = when (licenseSummary.state) {
+                        com.example.smsgateway.license.LicenseState.ACTIVE ->
+                            MaterialTheme.colorScheme.primary
+                        com.example.smsgateway.license.LicenseState.GRACE,
+                        com.example.smsgateway.license.LicenseState.NEVER_ACTIVATED,
+                        -> MaterialTheme.colorScheme.tertiary
+                        else -> MaterialTheme.colorScheme.error
+                    },
+                )
+                licenseSummary.licensedMsisdn?.let { msisdn ->
+                    Text(
+                        text = stringResource(
+                            R.string.license_msisdn_label,
+                            PhoneUtils.formatForDisplay(msisdn) ?: msisdn,
+                        ),
+                    )
+                }
+                if (licenseSummary.state == com.example.smsgateway.license.LicenseState.NEVER_ACTIVATED &&
+                    licenseSummary.activationWindowRemainingMs > 0
+                ) {
+                    Text(
+                        text = stringResource(
+                            R.string.license_window_remaining,
+                            formatDurationFa(licenseSummary.activationWindowRemainingMs),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                if (licenseSummary.state == com.example.smsgateway.license.LicenseState.GRACE &&
+                    licenseSummary.graceRemainingMs > 0
+                ) {
+                    Text(
+                        text = stringResource(
+                            R.string.license_grace_remaining,
+                            formatDurationFa(licenseSummary.graceRemainingMs),
+                        ),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+                OutlinedButton(
+                    onClick = {
+                        com.example.smsgateway.license.LicenseChecker.getInstance(context)
+                            .requestCheckNow()
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.license_check_sent),
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        licenseSummary =
+                            com.example.smsgateway.license.LicenseStore.getInstance(context).statusSummary()
+                    },
+                ) {
+                    Text(stringResource(R.string.license_check_now))
+                }
+            }
+        }
+
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier
@@ -388,6 +465,8 @@ fun SettingsScreen(
             }
         }
 
+        SmsEngineSettingsCard(settingsStore = settingsStore)
+
         if (verificationMode == VerificationMode.INTERNAL) {
             SmsProcessingSettingsCard(settingsStore = settingsStore)
 
@@ -436,6 +515,30 @@ private fun getAppVersionName(context: Context): String {
     } catch (_: Exception) {
         null
     } ?: "0.4"
+}
+
+@Composable
+private fun licenseStateLabel(state: LicenseState): String {
+    return stringResource(
+        when (state) {
+            LicenseState.NEVER_ACTIVATED -> R.string.license_state_never
+            LicenseState.ACTIVE -> R.string.license_state_active
+            LicenseState.GRACE -> R.string.license_state_grace
+            LicenseState.DENIED -> R.string.license_state_denied
+            LicenseState.LOCKED -> R.string.license_state_locked
+        },
+    )
+}
+
+private fun formatDurationFa(ms: Long): String {
+    val totalMinutes = (ms / 60_000L).coerceAtLeast(0)
+    val days = totalMinutes / (60 * 24)
+    val hours = (totalMinutes % (60 * 24)) / 60
+    return when {
+        days > 0 -> "$days روز و $hours ساعت"
+        hours > 0 -> "$hours ساعت"
+        else -> "${totalMinutes.coerceAtLeast(1)} دقیقه"
+    }
 }
 
 private fun copyToClipboard(context: Context, text: String) {

@@ -1,0 +1,23 @@
+{
+  "name": "wa-engine",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PC-side WhatsApp Web automation engine driven by the SMS Gateway phone over the hotspot LAN API.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "install-browser": "playwright install chromium",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

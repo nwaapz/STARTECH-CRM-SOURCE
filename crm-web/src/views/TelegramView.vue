@@ -4,24 +4,42 @@ import {
   connectTelegramBot,
   disconnectTelegramBot,
   fetchTelegramMessages,
+  fetchTelegramSettings,
   fetchTelegramStatus,
   updateTelegramSettings,
 } from '@/api/client'
-import type { TelegramMessage, TelegramStatus } from '@/api/types'
+import type { BotMenuSettings, TelegramMessage, TelegramSettings, TelegramStatus } from '@/api/types'
+import BotUrlCopy from '@/components/BotUrlCopy.vue'
+import UiSwitch from '@/components/UiSwitch.vue'
+import { botPublicUrl } from '@/utils/botUrl'
 
 const loading = ref(true)
 const connecting = ref(false)
 const disconnecting = ref(false)
 const savingSerial = ref(false)
+const savingInvite = ref(false)
+const savingMessage = ref(false)
+const savingMenu = ref(false)
 const error = ref('')
 const tokenInput = ref('')
 const status = ref<TelegramStatus>({
   active: false,
   serialEnabled: false,
+  inviteEnabled: false,
   polling: false,
 })
 const messages = ref<TelegramMessage[]>([])
 const serialEnabled = ref(false)
+const inviteEnabled = ref(false)
+const inviteMessage = ref('')
+const inviteMessageDirty = ref(false)
+const menuRegisterWarranty = ref(true)
+const menuWarrantyStatus = ref(true)
+const menuSendProductPhoto = ref(true)
+const menuInviteFriends = ref(true)
+const menuMyScore = ref(true)
+const menuSupport = ref(true)
+const menuHelp = ref(true)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 let lastTimestamp = 0
@@ -33,6 +51,8 @@ const statusLabel = computed(() => {
   if (status.value.botUsername) parts.push(`(@${status.value.botUsername})`)
   return parts.join(' ')
 })
+
+const botUrl = computed(() => botPublicUrl('telegram', status.value.botUsername))
 
 function truncateChatId(chatId: string): string {
   if (chatId.length <= 12) return chatId
@@ -50,9 +70,54 @@ function formatTime(timestamp: number): string {
   }).format(new Date(timestamp))
 }
 
-async function loadStatus() {
+function applyMenuFromSettings(settings: BotMenuSettings) {
+  menuRegisterWarranty.value = settings.menuRegisterWarranty
+  menuWarrantyStatus.value = settings.menuWarrantyStatus
+  menuSendProductPhoto.value = settings.menuSendProductPhoto ?? true
+  menuInviteFriends.value = settings.menuInviteFriends
+  menuMyScore.value = settings.menuMyScore ?? true
+  menuSupport.value = settings.menuSupport
+  menuHelp.value = settings.menuHelp
+}
+
+function resetMenuDefaults() {
+  menuRegisterWarranty.value = true
+  menuWarrantyStatus.value = true
+  menuSendProductPhoto.value = true
+  menuInviteFriends.value = true
+  menuMyScore.value = true
+  menuSupport.value = true
+  menuHelp.value = true
+}
+
+function settingsPayload(): TelegramSettings {
+  return {
+    serialEnabled: serialEnabled.value,
+    inviteEnabled: inviteEnabled.value,
+    inviteMessage: inviteMessage.value,
+    menuRegisterWarranty: menuRegisterWarranty.value,
+    menuWarrantyStatus: menuWarrantyStatus.value,
+    menuSendProductPhoto: menuSendProductPhoto.value,
+    menuInviteFriends: menuInviteFriends.value,
+    menuMyScore: menuMyScore.value,
+    menuSupport: menuSupport.value,
+    menuHelp: menuHelp.value,
+  }
+}
+
+async function loadStatus(options: { syncFormFields?: boolean } = {}) {
+  const syncFormFields = options.syncFormFields ?? true
   status.value = await fetchTelegramStatus()
+  if (!syncFormFields) return
   serialEnabled.value = status.value.serialEnabled
+  inviteEnabled.value = status.value.inviteEnabled
+  if (status.value.active) {
+    const settings = await fetchTelegramSettings()
+    if (!inviteMessageDirty.value) {
+      inviteMessage.value = settings.inviteMessage
+    }
+    applyMenuFromSettings(settings)
+  }
 }
 
 async function loadMessages(options: { silent?: boolean } = {}) {
@@ -91,7 +156,7 @@ async function loadMessages(options: { silent?: boolean } = {}) {
 async function refreshAll(options: { silent?: boolean } = {}) {
   error.value = ''
   try {
-    await loadStatus()
+    await loadStatus({ syncFormFields: !options.silent })
     if (lastTimestamp === 0 || !options.silent) {
       lastTimestamp = 0
       await loadMessages({ silent: options.silent })
@@ -109,6 +174,11 @@ async function connectBot() {
   try {
     status.value = await connectTelegramBot({ token: tokenInput.value.trim() })
     serialEnabled.value = status.value.serialEnabled
+    inviteEnabled.value = status.value.inviteEnabled
+    const settings = await fetchTelegramSettings()
+    inviteMessage.value = settings.inviteMessage
+    inviteMessageDirty.value = false
+    applyMenuFromSettings(settings)
     lastTimestamp = 0
     await loadMessages()
     startPolling()
@@ -125,6 +195,10 @@ async function disconnectBot() {
   try {
     status.value = await disconnectTelegramBot()
     serialEnabled.value = false
+    inviteEnabled.value = false
+    inviteMessage.value = ''
+    inviteMessageDirty.value = false
+    resetMenuDefaults()
     tokenInput.value = ''
     stopPolling()
     lastTimestamp = 0
@@ -140,7 +214,7 @@ async function toggleSerialEnabled() {
   savingSerial.value = true
   error.value = ''
   try {
-    const updated = await updateTelegramSettings({ serialEnabled: serialEnabled.value })
+    const updated = await updateTelegramSettings(settingsPayload())
     serialEnabled.value = updated.serialEnabled
     status.value = { ...status.value, serialEnabled: updated.serialEnabled }
   } catch (e) {
@@ -148,6 +222,58 @@ async function toggleSerialEnabled() {
     error.value = e instanceof Error ? e.message : 'خطا در ذخیره تنظیمات'
   } finally {
     savingSerial.value = false
+  }
+}
+
+async function toggleInviteEnabled() {
+  savingInvite.value = true
+  error.value = ''
+  try {
+    const updated = await updateTelegramSettings(settingsPayload())
+    inviteEnabled.value = updated.inviteEnabled
+    status.value = { ...status.value, inviteEnabled: updated.inviteEnabled }
+  } catch (e) {
+    inviteEnabled.value = status.value.inviteEnabled
+    error.value = e instanceof Error ? e.message : 'خطا در ذخیره تنظیمات'
+  } finally {
+    savingInvite.value = false
+  }
+}
+
+async function saveInviteMessage() {
+  savingMessage.value = true
+  error.value = ''
+  try {
+    const updated = await updateTelegramSettings(settingsPayload())
+    inviteMessage.value = updated.inviteMessage
+    inviteMessageDirty.value = false
+  } catch (e) {
+    error.value = e instanceof Error ? e.message : 'خطا در ذخیره متن پیام'
+  } finally {
+    savingMessage.value = false
+  }
+}
+
+async function saveMenuSettings() {
+  savingMenu.value = true
+  error.value = ''
+  const snapshot = {
+    menuRegisterWarranty: menuRegisterWarranty.value,
+    menuWarrantyStatus: menuWarrantyStatus.value,
+    menuSendProductPhoto: menuSendProductPhoto.value,
+    menuInviteFriends: menuInviteFriends.value,
+    menuMyScore: menuMyScore.value,
+    menuSupport: menuSupport.value,
+    menuHelp: menuHelp.value,
+  }
+  try {
+    const updated = await updateTelegramSettings(settingsPayload())
+    applyMenuFromSettings(updated)
+  } catch (e) {
+    applyMenuFromSettings(snapshot)
+    error.value = e instanceof Error ? e.message : 'خطا در ذخیره منوی ربات'
+  } finally {
+    savingMenu.value = false
   }
 }
 
@@ -213,15 +339,88 @@ onUnmounted(stopPolling)
         <span v-if="status.active && status.polling" class="polling-badge">در حال دریافت</span>
       </p>
 
-      <label v-if="status.active" class="toggle-row">
-        <input
-          v-model="serialEnabled"
-          type="checkbox"
-          :disabled="savingSerial"
-          @change="toggleSerialEnabled"
+      <BotUrlCopy v-if="status.active && botUrl" :url="botUrl" />
+
+      <UiSwitch
+        v-if="status.active"
+        v-model="serialEnabled"
+        label="دریافت سریال از تلگرام"
+        :disabled="savingSerial"
+        @change="toggleSerialEnabled"
+      />
+
+      <UiSwitch
+        v-if="status.active"
+        v-model="inviteEnabled"
+        label="ارسال لینک دعوت ربات به مشتریان جدید"
+        :disabled="savingInvite"
+        @change="toggleInviteEnabled"
+      />
+
+      <div v-if="status.active && inviteEnabled" class="field">
+        <span>متن پیام دعوت (از @1 برای لینک ربات استفاده کنید)</span>
+        <textarea
+          v-model="inviteMessage"
+          dir="rtl"
+          rows="3"
+          :disabled="savingMessage"
+          placeholder="برای استفاده از خدمات ما در این ربات، روی لینک زیر کلیک کنید:&#10;@1"
+          @input="inviteMessageDirty = true"
         />
-        <span>دریافت سریال از تلگرام</span>
-      </label>
+        <button type="button" class="small" :disabled="savingMessage" @click="saveInviteMessage">
+          {{ savingMessage ? 'در حال ذخیره…' : 'ذخیره متن پیام' }}
+        </button>
+      </div>
+
+      <div v-if="status.active" class="menu-section">
+        <h2>منوی ربات</h2>
+        <p class="hint">
+          تغییرات بلافاصله ذخیره می‌شود و در پیام بعدی مشتری اعمال می‌گردد. برای دیدن دکمه جدید، یک
+          بار از ربات پیام بگیرید تا کیبورد به‌روز شود.
+        </p>
+        <UiSwitch
+          v-model="menuRegisterWarranty"
+          label="ثبت گارانتی"
+          :disabled="savingMenu"
+          @change="saveMenuSettings"
+        />
+        <UiSwitch
+          v-model="menuWarrantyStatus"
+          label="وضعیت گارانتی"
+          :disabled="savingMenu"
+          @change="saveMenuSettings"
+        />
+        <UiSwitch
+          v-model="menuSendProductPhoto"
+          label="ارسال عکس محصول (امتیاز / قرعه‌کشی)"
+          :disabled="savingMenu"
+          @change="saveMenuSettings"
+        />
+        <UiSwitch
+          v-model="menuInviteFriends"
+          label="دعوت دوستان"
+          :disabled="savingMenu"
+          @change="saveMenuSettings"
+        />
+        <UiSwitch
+          v-model="menuMyScore"
+          label="امتیاز من"
+          :disabled="savingMenu"
+          @change="saveMenuSettings"
+        />
+        <UiSwitch
+          v-model="menuSupport"
+          label="پشتیبانی"
+          :disabled="savingMenu"
+          @change="saveMenuSettings"
+        />
+        <UiSwitch
+          v-model="menuHelp"
+          label="راهنما"
+          :disabled="savingMenu"
+          @change="saveMenuSettings"
+        />
+      </div>
 
       <p v-if="error" class="error">{{ error }}</p>
     </div>
@@ -291,11 +490,15 @@ onUnmounted(stopPolling)
   color: #2e7d32;
 }
 
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-top: 1rem;
+.menu-section {
+  margin-top: 1.25rem;
+  padding-top: 1rem;
+  border-top: 1px solid #eceff1;
+}
+
+.menu-section h2 {
+  margin-bottom: 0.35rem;
+  font-size: 1.05rem;
 }
 
 .field {
@@ -309,6 +512,20 @@ onUnmounted(stopPolling)
   padding: 0.55rem 0.75rem;
   border: 1px solid #ccc;
   border-radius: 8px;
+}
+
+.field textarea {
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  resize: vertical;
+}
+
+.field .small {
+  margin-top: 0.35rem;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
 }
 
 .message-list {

@@ -1,8 +1,10 @@
 package com.example.smsgateway.lan
 
 import android.content.Context
+import com.example.smsgateway.ClubAutoMessageScheduler
 import com.example.smsgateway.CommunicationLog
 import com.example.smsgateway.MassSmsQueueService
+import com.example.smsgateway.WhatsAppCampaignService
 import com.example.smsgateway.SettingsStore
 import com.example.smsgateway.data.GatewayDatabase
 import io.ktor.http.HttpHeaders
@@ -58,6 +60,8 @@ class LanHttpServer(
                     val commCount = database.communicationMessageDao().countAll()
                     LanTraceLog.i(TAG, "communication_messages count after migration/backfill: $commCount")
                     MassSmsQueueService.getInstance(appContext).recoverOnStartup()
+                    WhatsAppCampaignService.getInstance(appContext).recoverOnStartup()
+                    ClubAutoMessageScheduler.getInstance(appContext).start()
                 }
 
                 if (!isPortAvailable(port)) {

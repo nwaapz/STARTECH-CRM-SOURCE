@@ -34,6 +34,10 @@ class RubikaPoller private constructor(
                     LanTraceLog.i("RubikaPoller", "Bot inactive — stopping poll loop")
                     break
                 }
+                if (!com.example.smsgateway.license.LicenseGate.allowsOperationalUse(appContext)) {
+                    delay(30_000)
+                    continue
+                }
 
                 val token = currentSettings.getRubikaToken()
                 if (token.isBlank()) {

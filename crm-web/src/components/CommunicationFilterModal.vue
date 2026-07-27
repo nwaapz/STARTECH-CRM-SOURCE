@@ -1,16 +1,20 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
+import type { CommunicationChannel } from '@/api/types'
 
 export type DirectionFilter = 'all' | 'incoming' | 'outgoing'
+export type ChannelFilter = 'all' | CommunicationChannel
 
 export interface CommunicationFilters {
   direction: DirectionFilter
+  channel: ChannelFilter
   phone: string
 }
 
 const props = defineProps<{
   open: boolean
   direction: DirectionFilter
+  channel: ChannelFilter
   phone: string
 }>()
 
@@ -20,13 +24,15 @@ const emit = defineEmits<{
 }>()
 
 const draftDirection = ref<DirectionFilter>('all')
+const draftChannel = ref<ChannelFilter>('all')
 const draftPhone = ref('')
 
 watch(
-  () => [props.open, props.direction, props.phone] as const,
-  ([open, direction, phone]) => {
+  () => [props.open, props.direction, props.channel, props.phone] as const,
+  ([open, direction, channel, phone]) => {
     if (open) {
       draftDirection.value = direction
+      draftChannel.value = channel
       draftPhone.value = phone
     }
   },
@@ -40,6 +46,7 @@ function handleOverlayClick() {
 function apply() {
   emit('apply', {
     direction: draftDirection.value,
+    channel: draftChannel.value,
     phone: draftPhone.value.trim(),
   })
 }
@@ -74,6 +81,29 @@ function apply() {
             <label class="filter-radio">
               <input v-model="draftDirection" type="radio" value="outgoing" />
               پیام‌های ارسالی
+            </label>
+          </fieldset>
+          <fieldset class="filter-fieldset">
+            <legend>کانال</legend>
+            <label class="filter-radio">
+              <input v-model="draftChannel" type="radio" value="all" />
+              همه کانال‌ها
+            </label>
+            <label class="filter-radio">
+              <input v-model="draftChannel" type="radio" value="sms" />
+              پیامک
+            </label>
+            <label class="filter-radio">
+              <input v-model="draftChannel" type="radio" value="rubika" />
+              روبیکا
+            </label>
+            <label class="filter-radio">
+              <input v-model="draftChannel" type="radio" value="telegram" />
+              تلگرام
+            </label>
+            <label class="filter-radio">
+              <input v-model="draftChannel" type="radio" value="bale" />
+              بله
             </label>
           </fieldset>
           <label>

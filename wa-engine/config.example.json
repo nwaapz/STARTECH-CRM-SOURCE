@@ -1,0 +1,10 @@
+{
+  "baseUrl": "",
+  "port": 8765,
+  "pin": "123456",
+  "pollIntervalMs": 4000,
+  "batchLimit": 5,
+  "headless": false,
+  "userDataDir": ".wa-profile",
+  "proxyServer": ""
+}

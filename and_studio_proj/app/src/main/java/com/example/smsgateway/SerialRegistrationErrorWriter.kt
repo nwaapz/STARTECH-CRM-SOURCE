@@ -2,8 +2,11 @@ package com.example.smsgateway
 
 import com.example.smsgateway.data.GatewayDatabase
 import com.example.smsgateway.data.SerialRegistrationErrorEntity
+import com.example.smsgateway.data.SyncOutboxEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.util.UUID
 
 object SerialRegistrationErrorReason {
     const val NOT_FOUND = "not_found"
@@ -21,12 +24,27 @@ class SerialRegistrationErrorWriter(
         val normalizedPhone = PhoneUtils.formatForDisplay(phone) ?: phone.trim()
         val normalizedSerial = SerialNormalizer.normalizeSerial(serial)
         if (normalizedSerial.isEmpty()) return@withContext
+        val at = System.currentTimeMillis()
         database.serialRegistrationErrorDao().insert(
             SerialRegistrationErrorEntity(
                 phone = normalizedPhone,
                 serial = normalizedSerial,
                 reason = reason,
-                at = System.currentTimeMillis(),
+                at = at,
+            ),
+        )
+        // Push to remote CRM so dashboard registration-error tables stay in sync.
+        val payload = JSONObject()
+            .put("phone", normalizedPhone)
+            .put("serial", normalizedSerial)
+            .put("reason", reason)
+            .put("at", at)
+        database.syncOutboxDao().insert(
+            SyncOutboxEntity(
+                eventId = UUID.randomUUID().toString(),
+                type = "registration_error",
+                payloadJson = payload.toString(),
+                createdAt = at,
             ),
         )
     }

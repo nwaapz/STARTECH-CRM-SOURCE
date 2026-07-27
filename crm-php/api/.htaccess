@@ -1,0 +1,12 @@
+RewriteEngine On
+
+# Pass Authorization header
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# Keep sync/*.php and webhooks/*.php as real files
+RewriteRule ^sync/ - [L]
+RewriteRule ^webhooks/ - [L]
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^(.*)$ index.php [QSA,L]

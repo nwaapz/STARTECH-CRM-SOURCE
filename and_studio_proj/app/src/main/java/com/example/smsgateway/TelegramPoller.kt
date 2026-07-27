@@ -34,6 +34,10 @@ class TelegramPoller private constructor(
                     LanTraceLog.i("TelegramPoller", "Bot inactive — stopping poll loop")
                     break
                 }
+                if (!com.example.smsgateway.license.LicenseGate.allowsOperationalUse(appContext)) {
+                    delay(30_000)
+                    continue
+                }
 
                 val token = currentSettings.getTelegramToken()
                 if (token.isBlank()) {

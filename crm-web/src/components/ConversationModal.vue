@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
-import { fetchCommunicationThread } from '@/api/client'
-import type { CommunicationMessage } from '@/api/types'
+import { fetchCommunicationThread, sendCommunication } from '@/api/client'
+import type { CommunicationChannel, CommunicationMessage } from '@/api/types'
 import { formatDateTimeFa, statusLabelFa } from '@/utils/formatCommunication'
 import { formatPhoneForDisplay } from '@/utils/formatPhone'
 
@@ -14,12 +14,44 @@ const emit = defineEmits<{
   close: []
 }>()
 
+type ChannelMeta = {
+  key: CommunicationChannel
+  label: string
+  className: string
+}
+
+const CHANNELS: ChannelMeta[] = [
+  { key: 'sms', label: 'پیامک', className: 'ch-sms' },
+  { key: 'rubika', label: 'روبیکا', className: 'ch-rubika' },
+  { key: 'telegram', label: 'تلگرام', className: 'ch-telegram' },
+  { key: 'bale', label: 'بله', className: 'ch-bale' },
+]
+
+function channelMeta(channel?: string | null): ChannelMeta {
+  return CHANNELS.find((c) => c.key === channel) ?? CHANNELS[0]
+}
+
 const messages = ref<CommunicationMessage[]>([])
 const hasMore = ref(false)
 const loading = ref(false)
 const loadingOlder = ref(false)
 const error = ref('')
 const scrollEl = ref<HTMLElement | null>(null)
+
+const draft = ref('')
+const selectedChannels = ref<Record<CommunicationChannel, boolean>>({
+  sms: true,
+  rubika: false,
+  telegram: false,
+  bale: false,
+})
+const sending = ref(false)
+const sendError = ref('')
+const sendNotice = ref('')
+
+function toggleChannel(key: CommunicationChannel) {
+  selectedChannels.value[key] = !selectedChannels.value[key]
+}
 
 async function loadInitial() {
   loading.value = true
@@ -36,6 +68,40 @@ async function loadInitial() {
     error.value = e instanceof Error ? e.message : 'خطا'
   } finally {
     loading.value = false
+  }
+}
+
+async function sendMessage() {
+  const text = draft.value.trim()
+  sendError.value = ''
+  sendNotice.value = ''
+  if (!text) {
+    sendError.value = 'متن پیام را وارد کنید.'
+    return
+  }
+  const channels = CHANNELS.map((c) => c.key).filter((key) => selectedChannels.value[key])
+  if (channels.length === 0) {
+    sendError.value = 'حداقل یک تونل را انتخاب کنید.'
+    return
+  }
+  sending.value = true
+  try {
+    const response = await sendCommunication({ phone: props.phone, body: text, channels })
+    const failed = response.results.filter((r) => !r.ok)
+    const okCount = response.results.length - failed.length
+    if (failed.length > 0) {
+      const parts = failed.map((r) => `${channelMeta(r.channel).label}: ${r.error ?? 'خطا'}`)
+      sendError.value = parts.join(' — ')
+    }
+    if (okCount > 0) {
+      draft.value = ''
+      sendNotice.value = `ارسال شد از طریق ${okCount.toLocaleString('fa-IR')} تونل`
+      await loadInitial()
+    }
+  } catch (e) {
+    sendError.value = e instanceof Error ? e.message : 'خطا در ارسال'
+  } finally {
+    sending.value = false
   }
 }
 
@@ -90,6 +156,9 @@ watch(
   () => [props.open, props.phone] as const,
   ([open]) => {
     if (open) {
+      draft.value = ''
+      sendError.value = ''
+      sendNotice.value = ''
       void loadInitial()
     }
   },
@@ -107,7 +176,13 @@ watch(
         @click.stop
       >
         <div class="modal-header">
-          <h2>{{ formatPhoneForDisplay(phone) }}</h2>
+          <h2>
+            {{
+              phone.startsWith('bot:')
+                ? `چت ${channelMeta(phone.split(':')[1]).label}`
+                : formatPhoneForDisplay(phone)
+            }}
+          </h2>
           <button type="button" class="modal-close" aria-label="بستن" @click="emit('close')">
             ×
           </button>
@@ -132,10 +207,15 @@ watch(
               :class="message.direction === 'incoming' ? 'bubble-in' : 'bubble-out'"
             >
               <p class="bubble-body">{{ message.body }}</p>
-              <p class="bubble-time">
-                {{ formatDateTimeFa(message.timestamp).date }}
-                {{ formatDateTimeFa(message.timestamp).time }}
-              </p>
+              <div class="bubble-meta">
+                <span class="channel-badge" :class="channelMeta(message.channel).className">
+                  {{ channelMeta(message.channel).label }}
+                </span>
+                <span class="bubble-time">
+                  {{ formatDateTimeFa(message.timestamp).date }}
+                  {{ formatDateTimeFa(message.timestamp).time }}
+                </span>
+              </div>
               <p
                 v-if="message.direction === 'outgoing' && message.status && message.status !== 'sent'"
                 class="bubble-status"
@@ -145,6 +225,45 @@ watch(
             </div>
           </div>
         </div>
+
+        <div v-if="!phone.startsWith('bot:')" class="composer">
+          <div class="composer-channels">
+            <button
+              v-for="ch in CHANNELS"
+              :key="ch.key"
+              type="button"
+              class="channel-toggle"
+              :class="[ch.className, { active: selectedChannels[ch.key] }]"
+              :aria-pressed="selectedChannels[ch.key]"
+              @click="toggleChannel(ch.key)"
+            >
+              {{ ch.label }}
+            </button>
+          </div>
+          <div class="composer-input">
+            <textarea
+              v-model="draft"
+              class="composer-textarea"
+              rows="2"
+              placeholder="پیامی برای مشتری بنویسید…"
+              :disabled="sending"
+              @keydown.enter.exact.prevent="sendMessage"
+            />
+            <button
+              type="button"
+              class="composer-send"
+              :disabled="sending"
+              @click="sendMessage"
+            >
+              {{ sending ? '…' : 'ارسال' }}
+            </button>
+          </div>
+          <p v-if="sendError" class="error composer-feedback">{{ sendError }}</p>
+          <p v-else-if="sendNotice" class="hint composer-feedback composer-ok">{{ sendNotice }}</p>
+        </div>
+        <p v-else class="hint modal-loading">
+          تا ثبت شماره موبایل توسط کاربر، ارسال از این گفتگو ممکن نیست.
+        </p>
       </div>
     </div>
   </Teleport>

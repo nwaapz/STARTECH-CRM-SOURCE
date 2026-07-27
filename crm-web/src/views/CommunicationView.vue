@@ -1,19 +1,42 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import NavBar from '@/components/NavBar.vue'
 import ConversationModal from '@/components/ConversationModal.vue'
 import CommunicationFilterModal, {
+  type ChannelFilter,
   type CommunicationFilters,
   type DirectionFilter,
 } from '@/components/CommunicationFilterModal.vue'
 import { fetchCommunications } from '@/api/client'
-import type { CommunicationMessage } from '@/api/types'
+import type { CommunicationChannel, CommunicationMessage } from '@/api/types'
 import {
   formatDateTimeFa,
   statusLabelFa,
   truncateText,
 } from '@/utils/formatCommunication'
 import { formatPhoneForDisplay } from '@/utils/formatPhone'
+
+const CHANNEL_META: Record<
+  CommunicationChannel,
+  { label: string; className: string }
+> = {
+  sms: { label: 'پیامک', className: 'ch-sms' },
+  rubika: { label: 'روبیکا', className: 'ch-rubika' },
+  telegram: { label: 'تلگرام', className: 'ch-telegram' },
+  bale: { label: 'بله', className: 'ch-bale' },
+}
+
+function channelMeta(channel?: string | null) {
+  const key = (channel ?? 'sms') as CommunicationChannel
+  return CHANNEL_META[key] ?? CHANNEL_META.sms
+}
+
+function contactLabel(phone: string, channel?: string | null): string {
+  if (phone.startsWith('bot:')) {
+    return `چت ${channelMeta(channel ?? phone.split(':')[1]).label}`
+  }
+  return formatPhoneForDisplay(phone) || phone
+}
 
 const page = ref(1)
 const limit = ref(50)
@@ -25,7 +48,15 @@ const selectedPhone = ref<string | null>(null)
 const modalOpen = ref(false)
 const filterModalOpen = ref(false)
 const appliedDirection = ref<DirectionFilter>('all')
+const appliedChannel = ref<ChannelFilter>('all')
 const appliedPhone = ref('')
+
+const hasFilters = computed(
+  () =>
+    appliedDirection.value !== 'all' ||
+    appliedChannel.value !== 'all' ||
+    !!appliedPhone.value,
+)
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -42,6 +73,7 @@ async function load(options: { silent?: boolean; resetPage?: boolean } = {}) {
       page: page.value,
       limit: limit.value,
       direction: appliedDirection.value === 'all' ? undefined : appliedDirection.value,
+      channel: appliedChannel.value === 'all' ? undefined : appliedChannel.value,
       phone: appliedPhone.value || undefined,
     })
     items.value = response.items
@@ -74,6 +106,7 @@ function closeFilterModal() {
 
 function applyFilters(filters: CommunicationFilters) {
   appliedDirection.value = filters.direction
+  appliedChannel.value = filters.channel
   appliedPhone.value = filters.phone
   filterModalOpen.value = false
   void load({ resetPage: true })
@@ -81,6 +114,11 @@ function applyFilters(filters: CommunicationFilters) {
 
 function clearDirectionFilter() {
   appliedDirection.value = 'all'
+  void load({ resetPage: true })
+}
+
+function clearChannelFilter() {
+  appliedChannel.value = 'all'
   void load({ resetPage: true })
 }
 
@@ -126,14 +164,27 @@ onUnmounted(() => {
       <div class="card">
         <div class="comm-header">
           <h1>ارتباطات</h1>
-          <button type="button" class="secondary" @click="openFilterModal">فیلتر</button>
+          <button
+            type="button"
+            class="filter-trigger"
+            :class="{ 'has-filters': hasFilters }"
+            @click="openFilterModal"
+          >
+            <span class="filter-trigger-icon" aria-hidden="true">⚙</span>
+            فیلتر
+            <span
+              v-if="hasFilters"
+              class="filter-trigger-dot"
+              aria-hidden="true"
+            />
+          </button>
         </div>
-        <p class="hint">تاریخچه پیامک‌های دریافتی و ارسالی — برای مشاهده گفتگو روی هر ردیف کلیک کنید.</p>
+        <p class="hint">
+          همه پیام‌های ورودی و خروجی از پیامک، روبیکا، تلگرام و بله — برای مشاهده گفتگو روی هر ردیف کلیک
+          کنید.
+        </p>
 
-        <div
-          v-if="appliedDirection !== 'all' || appliedPhone"
-          class="filter-bar"
-        >
+        <div v-if="hasFilters" class="filter-bar">
           <span
             v-if="appliedDirection !== 'all'"
             class="filter-chip"
@@ -144,6 +195,17 @@ onUnmounted(() => {
               class="filter-chip-close"
               aria-label="حذف فیلتر جهت"
               @click="clearDirectionFilter"
+            >
+              ×
+            </button>
+          </span>
+          <span v-if="appliedChannel !== 'all'" class="filter-chip">
+            {{ channelMeta(appliedChannel).label }}
+            <button
+              type="button"
+              class="filter-chip-close"
+              aria-label="حذف فیلتر کانال"
+              @click="clearChannelFilter"
             >
               ×
             </button>
@@ -169,6 +231,7 @@ onUnmounted(() => {
             <thead>
               <tr>
                 <th>جهت</th>
+                <th>کانال</th>
                 <th>شماره</th>
                 <th>پیام</th>
                 <th>تاریخ</th>
@@ -177,10 +240,10 @@ onUnmounted(() => {
             </thead>
             <tbody>
               <tr v-if="loading && items.length === 0">
-                <td colspan="5" class="hint">در حال بارگذاری…</td>
+                <td colspan="6" class="hint">در حال بارگذاری…</td>
               </tr>
               <tr v-else-if="items.length === 0">
-                <td colspan="5" class="hint">پیامی ثبت نشده است.</td>
+                <td colspan="6" class="hint">پیامی ثبت نشده است.</td>
               </tr>
               <tr
                 v-for="item in items"
@@ -197,7 +260,12 @@ onUnmounted(() => {
                     {{ item.direction === 'incoming' ? '↓' : '↑' }}
                   </span>
                 </td>
-                <td>{{ formatPhoneForDisplay(item.phone) }}</td>
+                <td>
+                  <span class="channel-badge" :class="channelMeta(item.channel).className">
+                    {{ channelMeta(item.channel).label }}
+                  </span>
+                </td>
+                <td>{{ contactLabel(item.phone, item.channel) }}</td>
                 <td class="comm-message-cell">
                   {{ truncateText(item.body) }}
                   <span
@@ -226,6 +294,7 @@ onUnmounted(() => {
     <CommunicationFilterModal
       :open="filterModalOpen"
       :direction="appliedDirection"
+      :channel="appliedChannel"
       :phone="appliedPhone"
       @apply="applyFilters"
       @close="closeFilterModal"

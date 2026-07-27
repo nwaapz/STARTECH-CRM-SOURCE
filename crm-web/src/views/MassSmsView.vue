@@ -3,13 +3,20 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import NavBar from '@/components/NavBar.vue'
 import MassSmsCampaignCard from '@/components/MassSmsCampaignCard.vue'
 import JalaliDateTimePicker from '@/components/JalaliDateTimePicker.vue'
-import type { IranProvince, MassSmsAudienceType, MassSmsCampaign, SerialGroup } from '@/api/types'
+import type {
+  IranProvince,
+  MassSmsAudienceType,
+  MassSmsCampaign,
+  MassSmsChannel,
+  SerialGroup,
+} from '@/api/types'
 import {
   createMassSmsCampaign,
   fetchMassSmsCampaigns,
   fetchMassSmsProvinces,
   fetchSerialGroups,
   previewMassSms,
+  uploadMassSmsMedia,
 } from '@/api/client'
 
 const provinces = ref<IranProvince[]>([])
@@ -25,6 +32,13 @@ const registrationFromDate = ref('')
 const registrationToDate = ref('')
 const message = ref('')
 const delaySeconds = ref(10)
+const channel = ref<MassSmsChannel>('sms')
+const mediaFile = ref<File | null>(null)
+const mediaUploading = ref(false)
+const fileInput = ref<HTMLInputElement | null>(null)
+const excludePairedRubika = ref(false)
+const excludePairedTelegram = ref(false)
+const excludePairedBale = ref(false)
 const recipientCount = ref<number | null>(null)
 const campaigns = ref<MassSmsCampaign[]>([])
 const loading = ref(false)
@@ -42,9 +56,31 @@ const cityOptions = computed(() => {
   return provinces.value.find((p) => p.id === provinceId.value)?.cities ?? []
 })
 
+const isBotChannel = computed(() => channel.value !== 'sms')
+
+const channelHint = computed(() => {
+  switch (channel.value) {
+    case 'rubika':
+      return 'فقط کاربرانی که ربات روبیکا را استارت کرده‌اند پیام دریافت می‌کنند؛ بقیه رد می‌شوند.'
+    case 'telegram':
+      return 'فقط کاربرانی که ربات تلگرام را استارت کرده‌اند پیام دریافت می‌کنند؛ بقیه رد می‌شوند.'
+    case 'bale':
+      return 'فقط کاربرانی که ربات بله را استارت کرده‌اند پیام دریافت می‌کنند؛ بقیه رد می‌شوند.'
+    default:
+      return ''
+  }
+})
+
 const locationDisabled = computed(() => audienceType.value === 'error')
 const groupFilterDisabled = computed(() => audienceType.value === 'error')
 const dateFilterDisabled = computed(() => audienceType.value === 'error')
+
+function warrantyLabel(months?: number | null, km?: number | null): string {
+  const parts: string[] = []
+  if (months != null && months > 0) parts.push(`${months} ماه`)
+  if (km != null && km > 0) parts.push(`${km} کیلومتر`)
+  return parts.length ? parts.join(' یا ') : 'بدون گارانتی'
+}
 
 const groupSelectionError = computed(() => {
   if (allGroupsMode.value || groupFilterDisabled.value) return null
@@ -105,6 +141,9 @@ function buildFilterBody() {
       dateFilterDisabled.value || allTimeMode.value
         ? null
         : registrationToDate.value || null,
+    excludePairedRubika: excludePairedRubika.value,
+    excludePairedTelegram: excludePairedTelegram.value,
+    excludePairedBale: excludePairedBale.value,
   }
 }
 
@@ -199,6 +238,9 @@ watch(
     allTimeMode,
     registrationFromDate,
     registrationToDate,
+    excludePairedRubika,
+    excludePairedTelegram,
+    excludePairedBale,
   ],
   () => {
     scheduleRecipientCountRefresh()
@@ -269,16 +311,29 @@ async function submit() {
   }
   loading.value = true
   try {
+    let mediaAssetId: number | null = null
+    if (isBotChannel.value && mediaFile.value) {
+      mediaUploading.value = true
+      try {
+        const uploaded = await uploadMassSmsMedia(mediaFile.value)
+        mediaAssetId = uploaded.assetId
+      } finally {
+        mediaUploading.value = false
+      }
+    }
     const created = await createMassSmsCampaign({
       ...buildFilterBody(),
       message: message.value.trim(),
       delaySeconds: delaySeconds.value,
+      channel: channel.value,
+      mediaAssetId,
     })
     success.value =
       created.status === 'queued'
         ? `کارت در صف قرار گرفت (نوبت ${created.queuePosition ?? '—'})`
         : 'ارسال انبوه شروع شد'
     message.value = ''
+    clearMediaFile()
     await loadCampaigns()
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'خطا در ایجاد ارسال'
@@ -286,6 +341,20 @@ async function submit() {
     loading.value = false
   }
 }
+
+function onFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  mediaFile.value = input.files?.[0] ?? null
+}
+
+function clearMediaFile() {
+  mediaFile.value = null
+  if (fileInput.value) fileInput.value.value = ''
+}
+
+watch(channel, (value) => {
+  if (value === 'sms') clearMediaFile()
+})
 
 function onCampaignUpdated(updated: MassSmsCampaign) {
   const index = campaigns.value.findIndex((c) => c.id === updated.id)
@@ -339,6 +408,32 @@ onUnmounted(() => {
           </label>
         </div>
 
+        <div class="form-grid">
+          <label>
+            کانال ارسال (تونل)
+            <select v-model="channel">
+              <option value="sms">پیامک (SMS)</option>
+              <option value="rubika">ربات روبیکا</option>
+              <option value="telegram">ربات تلگرام</option>
+              <option value="bale">ربات بله</option>
+            </select>
+          </label>
+
+          <label v-if="isBotChannel">
+            فایل پیوست (اختیاری)
+            <input ref="fileInput" type="file" @change="onFileChange" />
+          </label>
+        </div>
+
+        <p v-if="isBotChannel" class="hint">{{ channelHint }}</p>
+        <div v-if="isBotChannel && mediaFile" class="media-selected">
+          <span>پیوست: {{ mediaFile.name }}</span>
+          <button type="button" class="link-btn" @click="clearMediaFile">حذف</button>
+        </div>
+        <p v-if="isBotChannel" class="hint">
+          فایل فقط یک‌بار آپلود می‌شود و برای همه گیرندگان با شناسه فایل مجدداً استفاده می‌شود.
+        </p>
+
         <section class="group-filter-section" :class="{ disabled: groupFilterDisabled }">
           <div class="group-filter-header">
             <h2>فیلتر گروه سریال</h2>
@@ -385,6 +480,9 @@ onUnmounted(() => {
                 @click="toggleGroup(group.id)"
               >
                 <span class="group-chip-label">{{ group.rangeLabel }}</span>
+                <span class="group-chip-warranty">{{
+                  warrantyLabel(group.warrantyMonths, group.warrantyKm)
+                }}</span>
                 <span v-if="group.description" class="group-chip-desc">{{ group.description }}</span>
               </button>
             </div>
@@ -471,6 +569,42 @@ onUnmounted(() => {
           برای «مشتریان خطادار» فیلتر استان/شهر اعمال نمی‌شود — همه شماره‌های خطادار شامل می‌شوند.
         </p>
 
+        <section class="group-filter-section">
+          <div class="group-filter-header">
+            <h2>استثنا از ارسال</h2>
+          </div>
+          <p class="hint">
+            با تیک زدن هر گزینه، پیام برای مشتریانی که آن ربات را به شماره خود وصل کرده‌اند
+            <strong>ارسال نمی‌شود</strong>.
+          </p>
+          <div class="exclude-bot-grid">
+            <label class="exclude-bot-option" :class="{ on: excludePairedRubika }">
+              <input v-model="excludePairedRubika" type="checkbox" />
+              <span>
+                ارسال نشود به کسانی که
+                <strong>روبیکا</strong>
+                را وصل کرده‌اند
+              </span>
+            </label>
+            <label class="exclude-bot-option" :class="{ on: excludePairedTelegram }">
+              <input v-model="excludePairedTelegram" type="checkbox" />
+              <span>
+                ارسال نشود به کسانی که
+                <strong>تلگرام</strong>
+                را وصل کرده‌اند
+              </span>
+            </label>
+            <label class="exclude-bot-option" :class="{ on: excludePairedBale }">
+              <input v-model="excludePairedBale" type="checkbox" />
+              <span>
+                ارسال نشود به کسانی که
+                <strong>بله</strong>
+                را وصل کرده‌اند
+              </span>
+            </label>
+          </div>
+        </section>
+
         <label>
           متن پیام
           <textarea v-model="message" rows="4" placeholder="متن پیامک..." />
@@ -484,10 +618,10 @@ onUnmounted(() => {
           <button
             type="button"
             class="primary"
-            :disabled="loading || countLoading || recipientCount === 0"
+            :disabled="loading || mediaUploading || countLoading || recipientCount === 0"
             @click="submit"
           >
-            {{ loading ? 'در حال ایجاد...' : 'شروع ارسال' }}
+            {{ mediaUploading ? 'در حال آپلود فایل...' : loading ? 'در حال ایجاد...' : 'شروع ارسال' }}
           </button>
         </div>
 
@@ -593,6 +727,14 @@ textarea {
   margin-bottom: 0.65rem;
 }
 
+.media-selected {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin: 0.35rem 0;
+  font-size: 0.9rem;
+}
+
 .link-btn {
   padding: 0;
   border: none;
@@ -646,6 +788,12 @@ textarea {
   font-size: 0.9rem;
 }
 
+.group-chip-warranty {
+  font-size: 0.8rem;
+  color: #2e7d32;
+  font-weight: 600;
+}
+
 .group-chip-desc {
   font-size: 0.78rem;
   color: #607d8b;
@@ -659,6 +807,40 @@ textarea {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
   gap: 0.75rem;
+}
+
+.exclude-bot-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.exclude-bot-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.55rem;
+  padding: 0.65rem 0.85rem;
+  border: 1px solid #cfd8dc;
+  border-radius: 10px;
+  background: #fff;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.exclude-bot-option.on {
+  background: #fff3e0;
+  border-color: #ef6c00;
+}
+
+.exclude-bot-option input {
+  width: 1.05rem;
+  height: 1.05rem;
+  margin-top: 0.15rem;
+  flex-shrink: 0;
+  accent-color: #ef6c00;
 }
 
 .mass-sms-form-actions {

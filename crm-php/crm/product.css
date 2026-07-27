@@ -1,0 +1,134 @@
+.drop-zone {
+    border: 2px dashed #007bff;
+    background: #f8f9fa;
+    color: #333;
+    border-radius: 8px;
+    transition: all 0.3s;
+}
+
+.drop-zone:hover {
+    background: #e9ecef;
+}
+
+.drop-zone p {
+    font-size: 16px;
+    font-weight: 500;
+}
+
+.card {
+    border-radius: 10px;
+}
+/* افزودن استایل‌ها برای پاپ‌آپ و نمای خوب */
+.modal-dialog {
+    max-width: 600px;
+}
+.modal-body {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+/* پاپ آپ */
+#popup {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 400px;
+    background-color: #282626;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    z-index: 9999;
+    border-radius: 10px;
+    padding: 20px;
+    display: none; /* پنهان کردن پاپ آپ به صورت پیش فرض */
+}
+
+#popup-delete {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 400px;
+    background-color: #282626;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    z-index: 9999;
+    border-radius: 10px;
+    padding: 20px;
+    display: none; /* پنهان کردن پاپ آپ به صورت پیش فرض */
+}
+
+.popup-content {
+    padding: 20px;
+}
+
+.popup-content h2 {
+    text-align: center;
+    margin-bottom: 20px;
+}
+
+#serial-list {
+    margin-bottom: 20px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+#serial-list-delete {
+    margin-bottom: 20px;
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+button {
+    width: 100%;
+    margin-top: 10px;
+}
+
+#save-serials {
+    background-color: #28a745;
+    border: none;
+}
+#save-serials-delete {
+    background-color: #28a745;
+    border: none;
+}
+#delete-serials{
+    background-color: #28a745;
+    border: none; 
+}
+
+#close-popup {
+    background-color: #dc3545;
+    border: none;
+}
+
+#close-popup-delete {
+    background-color: #dc3545;
+    border: none;
+}
+
+/* استایل‌های ساده برای تب‌ها */
+.nav-tabs {
+    margin-bottom: 10px;
+}
+
+.nav-tabs .nav-item {
+    margin-right: 5px;
+}
+
+.nav-link {
+    cursor: pointer;
+}
+
+.nav-link.active {
+    background-color: #007bff;
+    color: white;
+}
+
+.tab-content {
+    padding: 20px;
+    border: 1px solid #ddd;
+    border-top: none;
+    display: none;
+}
+
+.tab-content.active {
+    display: block;
+}

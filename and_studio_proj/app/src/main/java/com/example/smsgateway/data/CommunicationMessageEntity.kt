@@ -20,4 +20,5 @@ data class CommunicationMessageEntity(
     val timestamp: Long,
     val status: String? = null,
     val simLabel: String? = null,
+    val channel: String = "sms",
 )

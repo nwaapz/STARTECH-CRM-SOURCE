@@ -7,11 +7,13 @@ import { formatRelativeTimeFa } from '@/utils/formatRelativeTimeFa'
 const props = defineProps<{
   items: SerialRow[]
   showReminderActions?: boolean
+  clickableRows?: boolean
   sendingReminderId?: number | null
 }>()
 
 const emit = defineEmits<{
   sendReminder: [row: SerialRow]
+  rowClick: [row: SerialRow]
 }>()
 
 const nowMs = ref(Date.now())
@@ -32,13 +34,26 @@ onUnmounted(() => {
 function rowNeedsCompletion(row: SerialRow): boolean {
   if (row.needsCompletion === true) return true
   if (row.needsCompletion === false) return false
-  return Boolean(row.phone?.trim()) && (!row.city?.trim() || row.km == null)
+  return isMissingCity(row) || isMissingKm(row)
+}
+
+function isMissingCity(row: SerialRow): boolean {
+  if (row.missingCity === true) return true
+  if (row.missingCity === false) return false
+  return Boolean(row.phone?.trim()) && !row.city?.trim()
+}
+
+function isMissingKm(row: SerialRow): boolean {
+  if (row.missingKm === true) return true
+  if (row.missingKm === false) return false
+  if (row.category === 'seller_to_end_user') return false
+  return Boolean(row.phone?.trim()) && row.km == null
 }
 
 function missingFieldsLabel(row: SerialRow): string {
   const missing: string[] = []
-  if (!row.city) missing.push('شهر')
-  if (row.km == null) missing.push('کیلومتر')
+  if (isMissingCity(row)) missing.push('شهر')
+  if (isMissingKm(row)) missing.push('کیلومتر')
   return missing.join('، ')
 }
 
@@ -58,6 +73,28 @@ function reminderSentTimeLabel(row: SerialRow): string | null {
   }
   return formatRelativeTimeFa(row.completionReminderSentAt, nowMs.value)
 }
+
+function sourceLabel(row: SerialRow): string {
+  switch (row.registrationSource) {
+    case 'sms':
+      return 'پیامک'
+    case 'rubika':
+      return 'روبیکا'
+    case 'telegram':
+      return 'تلگرام'
+    case 'bale':
+      return 'بله'
+    default:
+      return row.registrationSource?.trim() ? row.registrationSource : '—'
+  }
+}
+
+function onRowClick(row: SerialRow, event: MouseEvent) {
+  if (!props.clickableRows) return
+  const target = event.target as HTMLElement
+  if (target.closest('button')) return
+  emit('rowClick', row)
+}
 </script>
 
 <template>
@@ -70,19 +107,33 @@ function reminderSentTimeLabel(row: SerialRow): string | null {
           <th>تاریخ</th>
           <th>شهر</th>
           <th>کیلومتر</th>
+          <th>منبع</th>
           <th v-if="showReminderActions">یادآوری تکمیل</th>
         </tr>
       </thead>
       <tbody>
         <tr v-if="items.length === 0">
-          <td :colspan="showReminderActions ? 6 : 5" class="empty">موردی یافت نشد</td>
+          <td :colspan="showReminderActions ? 7 : 6" class="empty">موردی یافت نشد</td>
         </tr>
-        <tr v-for="row in items" :key="row.id">
+        <tr
+          v-for="row in items"
+          :key="row.id"
+          :class="{ 'row-clickable': clickableRows }"
+          @click="onRowClick(row, $event)"
+        >
           <td>{{ row.serial }}</td>
           <td>{{ row.phone ? formatPhoneForDisplay(row.phone) : '—' }}</td>
           <td>{{ row.date ?? '—' }}</td>
-          <td>{{ row.city ?? '—' }}</td>
-          <td>{{ row.km ?? '—' }}</td>
+          <td :class="{ 'cell-incomplete': isMissingCity(row), 'cell-inherited': row.cityInherited }">
+            {{ row.city ?? '—' }}
+            <small v-if="row.cityInherited" class="cell-inherited-badge">از ثبت قبلی</small>
+            <small v-else-if="isMissingCity(row)" class="cell-warn">ناقص</small>
+          </td>
+          <td :class="{ 'cell-incomplete': isMissingKm(row) }">
+            {{ row.km ?? '—' }}
+            <small v-if="isMissingKm(row)" class="cell-warn">ناقص</small>
+          </td>
+          <td>{{ sourceLabel(row) }}</td>
           <td v-if="showReminderActions" class="actions-cell">
             <template v-if="rowNeedsCompletion(row)">
               <button
@@ -109,6 +160,33 @@ function reminderSentTimeLabel(row: SerialRow): string | null {
 </template>
 
 <style scoped>
+.cell-incomplete {
+  background: #fff8e1;
+  color: #e65100;
+  font-weight: 600;
+}
+
+.cell-inherited {
+  color: #455a64;
+}
+
+.cell-warn {
+  display: block;
+  margin-top: 0.15rem;
+  color: #ef6c00;
+  font-size: 0.72rem;
+  font-weight: 500;
+}
+
+.cell-inherited-badge {
+  display: block;
+  margin-top: 0.12rem;
+  color: #90a4ae;
+  font-size: 0.65rem;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
 .actions-cell {
   min-width: 11rem;
   vertical-align: top;
@@ -150,5 +228,14 @@ function reminderSentTimeLabel(row: SerialRow): string | null {
   margin-top: 0.3rem;
   color: #90a4ae;
   font-size: 0.72rem;
+}
+
+.row-clickable {
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.row-clickable:hover {
+  background: #f3f8ff;
 }
 </style>

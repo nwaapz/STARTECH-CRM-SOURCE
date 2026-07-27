@@ -78,6 +78,15 @@ interface MassSmsCampaignDao {
     )
     suspend fun incrementFailedCount(id: Long): Int
 
+    @Query(
+        """
+        UPDATE mass_sms_campaigns
+        SET skippedCount = skippedCount + 1
+        WHERE id = :id
+        """,
+    )
+    suspend fun incrementSkippedCount(id: Long): Int
+
     @Query("DELETE FROM mass_sms_campaigns WHERE id = :id")
     suspend fun deleteCampaign(id: Long): Int
 

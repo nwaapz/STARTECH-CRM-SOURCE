@@ -10,6 +10,17 @@ object MassSmsAudienceType {
     const val ALL = "all"
 }
 
+object MassSmsChannel {
+    const val SMS = "sms"
+    const val RUBIKA = "rubika"
+    const val TELEGRAM = "telegram"
+    const val BALE = "bale"
+
+    val ALL = setOf(SMS, RUBIKA, TELEGRAM, BALE)
+
+    fun isBot(channel: String): Boolean = channel == RUBIKA || channel == TELEGRAM || channel == BALE
+}
+
 object MassSmsCampaignStatus {
     const val QUEUED = "queued"
     const val RUNNING = "running"
@@ -31,6 +42,8 @@ data class MassSmsCampaignEntity(
     val message: String,
     val delaySeconds: Int = 10,
     val audienceType: String,
+    val channel: String = MassSmsChannel.SMS,
+    val mediaAssetId: Long? = null,
     val provinceId: String? = null,
     val cityName: String? = null,
     val serialGroupIdsJson: String? = null,
@@ -40,6 +53,7 @@ data class MassSmsCampaignEntity(
     val totalCount: Int = 0,
     val sentCount: Int = 0,
     val failedCount: Int = 0,
+    val skippedCount: Int = 0,
     val createdAt: Long,
     val startedAt: Long? = null,
     val completedAt: Long? = null,
@@ -50,6 +64,7 @@ object MassSmsRecipientStatus {
     const val PENDING = "pending"
     const val SENT = "sent"
     const val FAILED = "failed"
+    const val SKIPPED = "skipped"
 }
 
 @Entity(

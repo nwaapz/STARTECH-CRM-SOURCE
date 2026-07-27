@@ -11,17 +11,22 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -35,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
 import com.example.smsgateway.CommunicationLog
@@ -43,6 +49,7 @@ import com.example.smsgateway.R
 import com.example.smsgateway.SettingsStore
 import com.example.smsgateway.SimCardHelper
 import com.example.smsgateway.SimInfo
+import com.example.smsgateway.SimQuotaRouter
 import com.example.smsgateway.data.CommunicationMessageEntity
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -57,6 +64,9 @@ fun GatewayScreen(
     val context = LocalContext.current
     val availableSims = remember { mutableStateListOf<SimInfo>() }
     var enabledSimIds by remember { mutableStateOf(settingsStore.getEnabledSubscriptionIds()) }
+    var backupSimsEnabled by remember { mutableStateOf(settingsStore.isBackupSimsEnabled()) }
+    var smsDailyLimit by remember { mutableStateOf(settingsStore.getSmsDailyLimit()) }
+    var simUsage by remember { mutableStateOf<Map<Int, Pair<Int, Int>>>(emptyMap()) }
 
     LaunchedEffect(Unit) {
         settingsStore.ensureDefaultSimSelection()
@@ -64,6 +74,11 @@ fun GatewayScreen(
         availableSims.addAll(SimCardHelper.getAvailableSims(context))
         settingsStore.reconcileEnabledSubscriptionIds()
         enabledSimIds = settingsStore.getEnabledSubscriptionIds()
+        backupSimsEnabled = settingsStore.isBackupSimsEnabled()
+        smsDailyLimit = settingsStore.getSmsDailyLimit()
+        simUsage = SimQuotaRouter.statusList(context).associate { status ->
+            status.subscriptionId to (status.sent to status.limit)
+        }
     }
 
     var serviceRunning by remember { mutableStateOf(GatewayForegroundService.isRunning(context)) }
@@ -137,11 +152,17 @@ fun GatewayScreen(
         item {
             StatusCard(running = serviceRunning)
         }
+        item {
+            LicenseStatusCard()
+        }
         if (availableSims.isNotEmpty()) {
             item {
                 SimSelectionCard(
                     sims = availableSims,
                     enabledIds = enabledSimIds,
+                    backupEnabled = backupSimsEnabled,
+                    dailyLimit = smsDailyLimit,
+                    usageBySubId = simUsage,
                     onToggle = { sim, checked ->
                         val updated = enabledSimIds.toMutableSet()
                         if (checked) {
@@ -153,6 +174,15 @@ fun GatewayScreen(
                             enabledSimIds = updated
                             settingsStore.setEnabledSubscriptionIds(updated)
                         }
+                    },
+                    onBackupEnabledChange = { enabled ->
+                        backupSimsEnabled = enabled
+                        settingsStore.setBackupSimsEnabled(enabled)
+                    },
+                    onDailyLimitChange = { limit ->
+                        val normalized = limit.coerceIn(1, 100_000)
+                        smsDailyLimit = normalized
+                        settingsStore.setSmsDailyLimit(normalized)
                     },
                 )
             }
@@ -294,11 +324,63 @@ private fun StatusCard(running: Boolean) {
 }
 
 @Composable
+private fun LicenseStatusCard() {
+    val context = LocalContext.current
+    var summary by remember {
+        mutableStateOf(com.example.smsgateway.license.LicenseStore.getInstance(context).statusSummary())
+    }
+    LaunchedEffect(Unit) {
+        while (true) {
+            summary = com.example.smsgateway.license.LicenseStore.getInstance(context).statusSummary()
+            kotlinx.coroutines.delay(30_000)
+        }
+    }
+    val stateText = stringResource(
+        when (summary.state) {
+            com.example.smsgateway.license.LicenseState.NEVER_ACTIVATED -> R.string.license_state_never
+            com.example.smsgateway.license.LicenseState.ACTIVE -> R.string.license_state_active
+            com.example.smsgateway.license.LicenseState.GRACE -> R.string.license_state_grace
+            com.example.smsgateway.license.LicenseState.DENIED -> R.string.license_state_denied
+            com.example.smsgateway.license.LicenseState.LOCKED -> R.string.license_state_locked
+        },
+    )
+    Card(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            Text(
+                text = stringResource(R.string.license_section_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(text = stateText)
+            if (!com.example.smsgateway.license.LicenseGate.allowsOperationalUse(context)) {
+                Text(
+                    text = stringResource(
+                        com.example.smsgateway.license.LicenseGate.blockReasonResId(context)
+                            ?: R.string.license_blocked_locked,
+                    ),
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun SimSelectionCard(
     sims: List<SimInfo>,
     enabledIds: Set<Int>,
+    backupEnabled: Boolean,
+    dailyLimit: Int,
+    usageBySubId: Map<Int, Pair<Int, Int>>,
     onToggle: (SimInfo, Boolean) -> Unit,
+    onBackupEnabledChange: (Boolean) -> Unit,
+    onDailyLimitChange: (Int) -> Unit,
 ) {
+    var limitText by remember(dailyLimit) { mutableStateOf(dailyLimit.toString()) }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(
@@ -311,17 +393,65 @@ private fun SimSelectionCard(
                 modifier = Modifier.padding(top = 4.dp, bottom = 8.dp),
             )
             sims.forEach { sim ->
+                val usage = usageBySubId[sim.subscriptionId]
+                val sent = usage?.first ?: 0
+                val limit = dailyLimit
+                val isPrimary = sim.subscriptionId in enabledIds
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Checkbox(
-                        checked = sim.subscriptionId in enabledIds,
+                        checked = isPrimary,
                         onCheckedChange = { checked -> onToggle(sim, checked) },
                     )
-                    Text(sim.displayName)
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(sim.displayName)
+                        val roleLabel = when {
+                            isPrimary -> stringResource(R.string.sim_role_primary)
+                            backupEnabled -> stringResource(R.string.sim_role_backup)
+                            else -> null
+                        }
+                        Text(
+                            text = buildString {
+                                append(stringResource(R.string.sim_usage_format, sent, limit))
+                                if (roleLabel != null) {
+                                    append(" · ")
+                                    append(roleLabel)
+                                }
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
                 }
             }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = stringResource(R.string.sim_backup_enabled),
+                    modifier = Modifier.weight(1f),
+                )
+                Switch(
+                    checked = backupEnabled,
+                    onCheckedChange = onBackupEnabledChange,
+                )
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedTextField(
+                value = limitText,
+                onValueChange = { value ->
+                    limitText = value.filter { it.isDigit() }.take(6)
+                    limitText.toIntOrNull()?.let(onDailyLimitChange)
+                },
+                label = { Text(stringResource(R.string.sim_daily_limit_label)) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.fillMaxWidth(),
+            )
         }
     }
 }

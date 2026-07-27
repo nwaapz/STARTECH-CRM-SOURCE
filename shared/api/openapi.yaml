@@ -68,6 +68,52 @@ paths:
               schema:
                 $ref: "#/components/schemas/DuplicateSerialError"
 
+  /api/serials/complex-batch:
+    post:
+      summary: Create unique random serials with configurable length and character mix
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ComplexBatchRequest"
+      responses:
+        "200":
+          description: Batch result (skipped = collisions avoided while filling requested count)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
+  /api/serials/import-batch:
+    post:
+      summary: Import serials from an external list (e.g. first Excel column)
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ImportBatchRequest"
+      responses:
+        "200":
+          description: Import result (skipped = duplicates in file or already existing)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BatchResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
   /api/serial-groups:
     get:
       summary: List serial generation groups with usage stats
@@ -85,7 +131,7 @@ paths:
 
   /api/serial-groups/{id}:
     put:
-      summary: Update serial group description and score
+      summary: Update serial group description, score, and category
       security:
         - bearerAuth: []
       parameters:
@@ -128,6 +174,32 @@ paths:
       responses:
         "204":
           description: Group deleted
+        "400":
+          description: Invalid group id
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Group not found
+
+  /api/serial-groups/{id}/serials:
+    get:
+      summary: List serial values for a generation group
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Serial values in the group
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SerialGroupSerialsResponse"
         "400":
           description: Invalid group id
         "401":
@@ -197,6 +269,40 @@ paths:
           in: query
           schema:
             type: string
+        - name: source
+          in: query
+          description: Registration channel filter; repeat or comma-separate (sms, rubika, telegram). Empty = all.
+          schema:
+            type: string
+            enum: [sms, rubika, telegram, bale]
+          style: form
+          explode: true
+        - name: category
+          in: query
+          description: Serial group customer type; repeat or comma-separate (end_user_client, seller_to_end_user). Empty = all.
+          schema:
+            type: string
+            enum: [end_user_client, seller_to_end_user]
+          style: form
+          explode: true
+        - name: groupIds
+          in: query
+          description: Restrict to serials from these generation groups; repeat or comma-separate. Empty = all groups.
+          schema:
+            type: integer
+            format: int64
+          style: form
+          explode: true
+        - name: provinceId
+          in: query
+          description: Iran province id; when set, only serials whose city matches that province are returned
+          schema:
+            type: string
+        - name: cityName
+          in: query
+          description: City name within the selected province (optional narrower filter)
+          schema:
+            type: string
         - name: page
           in: query
           schema:
@@ -216,6 +322,38 @@ paths:
                 $ref: "#/components/schemas/SerialListResponse"
         "401":
           description: Invalid PIN
+
+  /api/serials/{id}:
+    put:
+      summary: Update registered serial row (admin edit)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateSerialRegistrationRequest"
+      responses:
+        "200":
+          description: Updated serial row
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SerialRow"
+        "400":
+          description: Validation error or serial not registered
+        "404":
+          description: Serial not found
+        "409":
+          description: Duplicate serial value
 
   /api/communications:
     get:
@@ -291,6 +429,29 @@ paths:
         "401":
           description: Invalid PIN
 
+  /api/communications/send:
+    post:
+      summary: Send a free-text message to one phone through one or more tunnels
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CommunicationSendRequest"
+      responses:
+        "200":
+          description: Per-channel send results
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CommunicationSendResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
   /api/settings/sms-processing:
     get:
       summary: Get SMS processing settings
@@ -322,6 +483,42 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SmsProcessingSettings"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
+  /api/settings/sim-quota:
+    get:
+      summary: Get per-SIM daily SMS quota settings
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: SIM quota settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimQuotaSettings"
+        "401":
+          description: Invalid PIN
+    put:
+      summary: Update per-SIM daily SMS quota settings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SimQuotaSettings"
+      responses:
+        "200":
+          description: Updated SIM quota settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SimQuotaSettings"
         "400":
           description: Validation error
         "401":
@@ -593,6 +790,122 @@ paths:
         "401":
           description: Invalid PIN
 
+
+  /api/bale/status:
+    get:
+      summary: Get Bale bot connection status
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaleStatus"
+        "401":
+          description: Invalid PIN
+
+  /api/bale/connect:
+    post:
+      summary: Connect and verify Bale bot token
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BaleConnectRequest"
+      responses:
+        "200":
+          description: Connected bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaleStatus"
+        "400":
+          description: Invalid token or connect failed
+        "401":
+          description: Invalid PIN
+
+  /api/bale/disconnect:
+    post:
+      summary: Disconnect Bale bot
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Disconnected bot status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaleStatus"
+        "401":
+          description: Invalid PIN
+
+  /api/bale/messages:
+    get:
+      summary: List Bale messages
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: since
+          in: query
+          schema:
+            type: integer
+            format: int64
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 200
+      responses:
+        "200":
+          description: Bale message list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaleMessageListResponse"
+        "401":
+          description: Invalid PIN
+
+  /api/settings/bale:
+    get:
+      summary: Get Bale bot settings
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Bale settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaleSettings"
+        "401":
+          description: Invalid PIN
+    put:
+      summary: Update Bale bot settings
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/BaleSettings"
+      responses:
+        "200":
+          description: Updated Bale settings
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/BaleSettings"
+        "401":
+          description: Invalid PIN
+
   /api/mass-sms/provinces:
     get:
       summary: List Iran provinces and cities for mass SMS filters
@@ -607,6 +920,7 @@ paths:
                 $ref: "#/components/schemas/IranProvinceListResponse"
         "401":
           description: Invalid PIN
+
 
   /api/mass-sms/preview:
     post:
@@ -630,6 +944,7 @@ paths:
           description: Validation error
         "401":
           description: Invalid PIN
+
 
   /api/mass-sms/campaigns:
     get:
@@ -666,6 +981,39 @@ paths:
           description: Validation error
         "401":
           description: Invalid PIN
+
+  /api/mass-sms/media:
+    post:
+      summary: Upload a media asset (image/file) for bot mass campaigns
+      description: >
+        Uploads a single file once and stores it as a reusable media asset. The returned
+        assetId is passed to campaign creation; the app caches a per-platform file_id on
+        first send so subsequent sends do not re-upload.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Stored media asset
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MassSmsMediaResponse"
+        "400":
+          description: No file provided
+        "401":
+          description: Invalid PIN
+
 
   /api/mass-sms/campaigns/{id}:
     get:
@@ -719,6 +1067,7 @@ paths:
         "404":
           description: Campaign not found
 
+
   /api/mass-sms/campaigns/{id}/pause:
     post:
       summary: Pause a running mass SMS campaign
@@ -743,6 +1092,7 @@ paths:
         "404":
           description: Campaign not found
 
+
   /api/mass-sms/campaigns/{id}/resume:
     post:
       summary: Resume a paused mass SMS campaign
@@ -766,6 +1116,313 @@ paths:
           description: Invalid PIN
         "404":
           description: Campaign not found
+
+  /api/club-auto-messages:
+    get:
+      summary: List customer-club scheduled auto-message rules
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Rule list
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClubAutoMessageRuleListResponse"
+        "401":
+          description: Invalid PIN
+    post:
+      summary: Create a customer-club auto-message rule
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClubAutoMessageUpsertRequest"
+      responses:
+        "200":
+          description: Created rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClubAutoMessageRule"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+
+  /api/club-auto-messages/{id}:
+    put:
+      summary: Update a customer-club auto-message rule
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ClubAutoMessageUpsertRequest"
+      responses:
+        "200":
+          description: Updated rule
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClubAutoMessageRule"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Rule not found
+    delete:
+      summary: Delete a customer-club auto-message rule
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "204":
+          description: Deleted
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Rule not found
+
+  /api/club-auto-messages/{id}/run-now:
+    post:
+      summary: Run a club auto-message rule immediately (test)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Rule after run
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClubAutoMessageRule"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Rule not found
+
+  /api/club-auto-messages/tick:
+    post:
+      summary: Nudge the gateway to process any due club auto-message rules now
+      description: >
+        Starts the scheduler if needed and triggers an immediate due-rule check.
+        Returns immediately; poll GET /api/club-auto-messages for runStatus progress.
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Nudge accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+        "401":
+          description: Invalid PIN
+
+  /api/club-auto-messages/{id}/preview:
+    get:
+      summary: Preview upcoming recipients before the next send
+      description: >
+        Lists phones eligible for this rule (registration on or before cutoff),
+        with per-channel status: pending, already_sent, no_chat, or no_token.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Paginated preview of eligible recipients
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClubAutoMessagePreviewResponse"
+        "400":
+          description: Validation error
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Rule not found
+
+  /api/club-auto-messages/{id}/sends:
+    get:
+      summary: List permanent recipients for a club auto-message rule
+      description: >
+        Each successful send is stored permanently (rule + phone + channel).
+        Recipients who already appear here are never sent the same rule again on that channel.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+      responses:
+        "200":
+          description: Paginated send ledger
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClubAutoMessageSendListResponse"
+        "401":
+          description: Invalid PIN
+        "404":
+          description: Rule not found
+
+  /api/auth/login:
+    post:
+      summary: CRM username/password login (returns Bearer session token)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password]
+              properties:
+                username: { type: string }
+                password: { type: string }
+      responses:
+        "200":
+          description: Session token
+        "401":
+          description: Invalid credentials
+
+  /api/lottery/participants:
+    get:
+      summary: Lottery pool (positive scores)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: city
+          in: query
+          schema: { type: string }
+        - name: phone
+          in: query
+          schema: { type: string }
+      responses:
+        "200":
+          description: Participants
+
+  /api/lottery/draw:
+    post:
+      summary: Weighted random draw (Jalali scores)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Drawn participant
+
+  /api/lottery/confirm:
+    post:
+      summary: Confirm winner and zero score
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Winner row
+
+  /api/stats/registrations-by-day:
+    get:
+      summary: Daily registration counts (Jalali from/to, Latin YYYY/MM/DD)
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: from
+          in: query
+          description: Jalali YYYY/MM/DD (default first day of current Jalali month)
+          schema: { type: string }
+        - name: to
+          in: query
+          description: Jalali YYYY/MM/DD (default last day of current Jalali month)
+          schema: { type: string }
+      responses:
+        "200":
+          description: Zero-filled day series
+
+  /api/admin/users:
+    get:
+      summary: List CRM users
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Users
+    post:
+      summary: Create CRM user
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Created
+
+  /api/admin/sync-status:
+    get:
+      summary: Cloud sync health
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Status
 
 components:
   securitySchemes:
@@ -836,6 +1493,41 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/SyncChange"
+        sims:
+          type: array
+          items:
+            $ref: "#/components/schemas/SimQuotaStatus"
+
+    SimQuotaStatus:
+      type: object
+      required: [label, subscriptionId, role, sent, limit, remaining]
+      properties:
+        label:
+          type: string
+        subscriptionId:
+          type: integer
+        role:
+          type: string
+          enum: [primary, backup]
+        sent:
+          type: integer
+        limit:
+          type: integer
+        remaining:
+          type: integer
+
+    SimQuotaSettings:
+      type: object
+      required: [dailyLimit, backupSimsEnabled]
+      properties:
+        dailyLimit:
+          type: integer
+          minimum: 1
+          maximum: 100000
+          default: 300
+        backupSimsEnabled:
+          type: boolean
+          default: false
 
     BatchRequest:
       type: object
@@ -862,6 +1554,96 @@ components:
           default: 1
           minimum: 1
           description: Lottery weight for this product group
+        category:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+          default: end_user_client
+          description: Whether serials are for end-user clients or sellers to end users
+        warrantyMonths:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Warranty duration in months after registration (at least one of months/km required)
+        warrantyKm:
+          type: integer
+          nullable: true
+          minimum: 1
+          description: Warranty mileage limit in km (at least one of months/km required)
+
+    ComplexBatchRequest:
+      type: object
+      required: [count, letterCount, digitCount]
+      properties:
+        count:
+          type: integer
+          minimum: 1
+          maximum: 10000
+          description: Exact number of unique serials to create
+        letterCount:
+          type: integer
+          minimum: 0
+          maximum: 32
+          description: Exact number of letter characters per serial (random positions)
+        digitCount:
+          type: integer
+          minimum: 0
+          maximum: 32
+          description: Exact number of digit characters per serial
+        city:
+          type: string
+        km:
+          type: integer
+        description:
+          type: string
+        score:
+          type: integer
+          default: 1
+          minimum: 1
+        category:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+          default: end_user_client
+        warrantyMonths:
+          type: integer
+          nullable: true
+          minimum: 1
+        warrantyKm:
+          type: integer
+          nullable: true
+          minimum: 1
+
+    ImportBatchRequest:
+      type: object
+      required: [serials]
+      properties:
+        serials:
+          type: array
+          items:
+            type: string
+          maxItems: 10000
+          description: Serial values (typically first column of an Excel file)
+        city:
+          type: string
+        km:
+          type: integer
+        description:
+          type: string
+        score:
+          type: integer
+          default: 1
+          minimum: 1
+        category:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+          default: end_user_client
+        warrantyMonths:
+          type: integer
+          nullable: true
+          minimum: 1
+        warrantyKm:
+          type: integer
+          nullable: true
+          minimum: 1
 
     BatchResponse:
       type: object
@@ -898,6 +1680,19 @@ components:
           nullable: true
         score:
           type: integer
+        category:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+        generationMode:
+          type: string
+          enum: [range, complex, import]
+          default: range
+        warrantyMonths:
+          type: integer
+          nullable: true
+        warrantyKm:
+          type: integer
+          nullable: true
         total:
           type: integer
         used:
@@ -919,6 +1714,17 @@ components:
           items:
             $ref: "#/components/schemas/SerialGroup"
 
+    SerialGroupSerialsResponse:
+      type: object
+      properties:
+        groupId:
+          type: integer
+          format: int64
+        serials:
+          type: array
+          items:
+            type: string
+
     UpdateSerialGroupRequest:
       type: object
       properties:
@@ -927,6 +1733,17 @@ components:
           nullable: true
         score:
           type: integer
+          minimum: 1
+        category:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+        warrantyMonths:
+          type: integer
+          nullable: true
+          minimum: 1
+        warrantyKm:
+          type: integer
+          nullable: true
           minimum: 1
 
     ExtendSerialGroupRangeRequest:
@@ -1001,11 +1818,49 @@ components:
           type: integer
         needsCompletion:
           type: boolean
+        missingCity:
+          type: boolean
+        missingKm:
+          type: boolean
+        cityInherited:
+          type: boolean
+          description: True when city is shown from a prior registration for the same phone
+        category:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+          nullable: true
         completionReminderSent:
           type: boolean
         completionReminderSentAt:
           type: integer
           format: int64
+          nullable: true
+        registrationSource:
+          type: string
+          enum: [sms, rubika, telegram, bale]
+          nullable: true
+          description: Channel that registered the serial
+        pairedRubika:
+          type: boolean
+        pairedTelegram:
+          type: boolean
+        pairedBale:
+          type: boolean
+
+    UpdateSerialRegistrationRequest:
+      type: object
+      required: [serial, date]
+      properties:
+        serial:
+          type: string
+        date:
+          type: string
+          description: Jalali datetime e.g. 1404/03/30 14:35:22
+        city:
+          type: string
+          nullable: true
+        km:
+          type: integer
           nullable: true
 
     SerialListResponse:
@@ -1102,6 +1957,49 @@ components:
         simLabel:
           type: string
           nullable: true
+        channel:
+          type: string
+          enum: [sms, rubika, telegram, bale]
+          default: sms
+
+    CommunicationSendRequest:
+      type: object
+      required: [phone, body, channels]
+      properties:
+        phone:
+          type: string
+        body:
+          type: string
+        channels:
+          type: array
+          items:
+            type: string
+            enum: [sms, rubika, telegram, bale]
+          minItems: 1
+
+    CommunicationSendChannelResult:
+      type: object
+      required: [channel, ok]
+      properties:
+        channel:
+          type: string
+          enum: [sms, rubika, telegram, bale]
+        ok:
+          type: boolean
+        error:
+          type: string
+          nullable: true
+
+    CommunicationSendResponse:
+      type: object
+      required: [phone, results]
+      properties:
+        phone:
+          type: string
+        results:
+          type: array
+          items:
+            $ref: "#/components/schemas/CommunicationSendChannelResult"
 
     CommunicationListResponse:
       type: object
@@ -1185,12 +2083,37 @@ components:
         audienceType:
           type: string
           enum: [registered, error, all]
+        channel:
+          type: string
+          enum: [sms, rubika, telegram, bale]
+          default: sms
+        mediaAssetId:
+          type: integer
+          format: int64
+          nullable: true
         provinceId:
           type: string
           nullable: true
         cityName:
           type: string
           nullable: true
+
+    MassSmsMediaResponse:
+      type: object
+      properties:
+        assetId:
+          type: integer
+          format: int64
+        fileName:
+          type: string
+        mimeType:
+          type: string
+        kind:
+          type: string
+          enum: [photo, document]
+        sizeBytes:
+          type: integer
+          format: int64
 
     MassSmsCampaign:
       type: object
@@ -1204,6 +2127,16 @@ components:
           type: integer
         audienceType:
           type: string
+        channel:
+          type: string
+          enum: [sms, rubika, telegram, bale]
+        mediaAssetId:
+          type: integer
+          format: int64
+          nullable: true
+        mediaFileName:
+          type: string
+          nullable: true
         provinceId:
           type: string
           nullable: true
@@ -1221,6 +2154,8 @@ components:
         sentCount:
           type: integer
         failedCount:
+          type: integer
+        skippedCount:
           type: integer
         pendingCount:
           type: integer
@@ -1260,7 +2195,7 @@ components:
           type: string
         status:
           type: string
-          enum: [pending, sent, failed]
+          enum: [pending, sent, failed, skipped]
         sentAt:
           type: integer
           format: int64
@@ -1348,6 +2283,22 @@ components:
       properties:
         serialEnabled:
           type: boolean
+        inviteEnabled:
+          type: boolean
+        inviteMessage:
+          type: string
+        menuRegisterWarranty:
+          type: boolean
+        menuWarrantyStatus:
+          type: boolean
+        menuInviteFriends:
+          type: boolean
+        menuMyScore:
+          type: boolean
+        menuSupport:
+          type: boolean
+        menuHelp:
+          type: boolean
 
     TelegramConnectRequest:
       type: object
@@ -1412,3 +2363,299 @@ components:
       properties:
         serialEnabled:
           type: boolean
+        inviteEnabled:
+          type: boolean
+        inviteMessage:
+          type: string
+        menuRegisterWarranty:
+          type: boolean
+        menuWarrantyStatus:
+          type: boolean
+        menuInviteFriends:
+          type: boolean
+        menuMyScore:
+          type: boolean
+        menuSupport:
+          type: boolean
+        menuHelp:
+          type: boolean
+
+
+    BaleConnectRequest:
+      type: object
+      required: [token]
+      properties:
+        token:
+          type: string
+
+    BaleStatus:
+      type: object
+      properties:
+        active:
+          type: boolean
+        botTitle:
+          type: string
+          nullable: true
+        botUsername:
+          type: string
+          nullable: true
+        serialEnabled:
+          type: boolean
+        inviteEnabled:
+          type: boolean
+        polling:
+          type: boolean
+
+    BaleMessage:
+      type: object
+      properties:
+        messageId:
+          type: string
+        chatId:
+          type: string
+        senderId:
+          type: string
+          nullable: true
+        text:
+          type: string
+        timestamp:
+          type: integer
+          format: int64
+        direction:
+          type: string
+          enum: [incoming, outgoing]
+        phoneNumber:
+          type: string
+          nullable: true
+        senderName:
+          type: string
+          nullable: true
+
+    BaleMessageListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/BaleMessage"
+        total:
+          type: integer
+
+    BaleSettings:
+      type: object
+      properties:
+        serialEnabled:
+          type: boolean
+        inviteEnabled:
+          type: boolean
+        inviteMessage:
+          type: string
+        menuRegisterWarranty:
+          type: boolean
+        menuWarrantyStatus:
+          type: boolean
+        menuSendProductPhoto:
+          type: boolean
+        menuInviteFriends:
+          type: boolean
+        menuMyScore:
+          type: boolean
+        menuSupport:
+          type: boolean
+        menuHelp:
+          type: boolean
+
+    ClubAutoMessageUpsertRequest:
+      type: object
+      required: [message]
+      properties:
+        title:
+          type: string
+        message:
+          type: string
+        offsetMonths:
+          type: integer
+          minimum: 0
+        offsetDays:
+          type: integer
+          minimum: 0
+        sendHour:
+          type: integer
+          minimum: 0
+          maximum: 23
+        sendMinute:
+          type: integer
+          minimum: 0
+          maximum: 59
+        delaySeconds:
+          type: integer
+          minimum: 1
+          default: 10
+        sendSms:
+          type: boolean
+        sendRubika:
+          type: boolean
+        sendTelegram:
+          type: boolean
+        sendBale:
+          type: boolean
+        serialCategory:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+          default: end_user_client
+          description: Fallback category when serialGroupIds is empty (legacy)
+        serialGroupIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+          description: Selected serial generation groups (required); each group's warranty is shown in UI
+        enabled:
+          type: boolean
+
+    ClubAutoMessageRule:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        title:
+          type: string
+        message:
+          type: string
+        offsetMonths:
+          type: integer
+        offsetDays:
+          type: integer
+        sendHour:
+          type: integer
+        sendMinute:
+          type: integer
+        sendSms:
+          type: boolean
+        sendRubika:
+          type: boolean
+        sendTelegram:
+          type: boolean
+        sendBale:
+          type: boolean
+        serialCategory:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+        serialGroupIds:
+          type: array
+          items:
+            type: integer
+            format: int64
+          nullable: true
+        serialGroupLabels:
+          type: array
+          items:
+            type: string
+          nullable: true
+          description: Human-readable group labels including warranty
+        enabled:
+          type: boolean
+        createdAt:
+          type: integer
+          format: int64
+        updatedAt:
+          type: integer
+          format: int64
+        lastRunAt:
+          type: integer
+          format: int64
+          nullable: true
+        lastRunDateJalali:
+          type: string
+          nullable: true
+        lastSuccessCount:
+          type: integer
+        lastFailCount:
+          type: integer
+        totalSentCount:
+          type: integer
+          description: Permanent count of recorded successful sends for this rule
+
+    ClubAutoMessageRuleListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClubAutoMessageRule"
+
+    ClubAutoMessageSendItem:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        phone:
+          type: string
+        channel:
+          type: string
+          enum: [sms, rubika, telegram, bale]
+        sentAt:
+          type: integer
+          format: int64
+        sentDateJalali:
+          type: string
+
+    ClubAutoMessageSendListResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClubAutoMessageSendItem"
+        total:
+          type: integer
+        page:
+          type: integer
+        limit:
+          type: integer
+
+    ClubAutoMessagePreviewChannelItem:
+      type: object
+      properties:
+        channel:
+          type: string
+          enum: [sms, rubika, telegram, bale]
+        status:
+          type: string
+          enum: [pending, already_sent, no_chat, no_token]
+
+    ClubAutoMessagePreviewItem:
+      type: object
+      properties:
+        phone:
+          type: string
+        channels:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClubAutoMessagePreviewChannelItem"
+        willSendAny:
+          type: boolean
+
+    ClubAutoMessagePreviewResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/ClubAutoMessagePreviewItem"
+        total:
+          type: integer
+        pendingCount:
+          type: integer
+        blockedCount:
+          type: integer
+        alreadyFullySentCount:
+          type: integer
+        cutoffDateJalali:
+          type: string
+        page:
+          type: integer
+        limit:
+          type: integer

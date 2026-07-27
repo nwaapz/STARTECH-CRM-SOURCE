@@ -12,4 +12,6 @@ data class SmsSessionEntity(
     val collectedCity: String? = null,
     val collectedKm: Int? = null,
     val updatedAt: Long,
+    /** SIM used for this conversation so continuation replies stay on one number. */
+    val subscriptionId: Int? = null,
 )

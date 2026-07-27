@@ -73,6 +73,16 @@ class TelegramChatStore private constructor(
         }
     }
 
+    fun isPhonePaired(phone: String): Boolean {
+        val normalized = PhoneUtils.formatForDisplay(phone) ?: phone.trim()
+        if (normalized.isEmpty()) return false
+        return runBlocking {
+            withContext(Dispatchers.IO) {
+                database.telegramChatContactDao().countByPhone(normalized) > 0
+            }
+        }
+    }
+
     fun needsPhoneRequest(chatId: String): Boolean {
         return runBlocking {
             withContext(Dispatchers.IO) {

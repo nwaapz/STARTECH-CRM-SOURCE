@@ -1,0 +1,25 @@
+<resources>
+    <string name="app_name">مدیریت مجوز پیامش</string>
+    <string name="notification_channel">مجوز پیامش</string>
+    <string name="notification_title">مدیریت مجوز فعال است</string>
+    <string name="notification_text">در حال پاسخ خودکار به پیامک‌های بررسی مجوز</string>
+    <string name="start_service">روشن کردن پاسخ خودکار</string>
+    <string name="stop_service">خاموش کردن پاسخ خودکار</string>
+    <string name="request_permissions">دریافت دسترسی‌ها</string>
+    <string name="add_seat">افزودن شماره</string>
+    <string name="phone_hint">شماره موبایل</string>
+    <string name="note_hint">یادداشت (اختیاری)</string>
+    <string name="revoke">باطل کردن</string>
+    <string name="transfer">انتقال</string>
+    <string name="transfer_to">شماره جدید</string>
+    <string name="empty_seats">هنوز شماره‌ای ثبت نشده</string>
+    <string name="active">فعال</string>
+    <string name="revoked">باطل</string>
+    <string name="added">شماره اضافه شد</string>
+    <string name="revoked_ok">مجوز باطل شد</string>
+    <string name="transferred">مجوز منتقل شد</string>
+    <string name="logs_title">گزارش بررسی‌های اخیر</string>
+    <string name="seats_title">شماره‌های مجاز (مادام‌العمر)</string>
+    <string name="service_running">پاسخ خودکار روشن است</string>
+    <string name="service_stopped">پاسخ خودکار خاموش است</string>
+</resources>

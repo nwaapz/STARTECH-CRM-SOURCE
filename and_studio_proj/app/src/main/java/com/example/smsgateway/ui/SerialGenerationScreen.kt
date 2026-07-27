@@ -12,10 +12,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -26,6 +29,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -33,6 +37,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.example.smsgateway.R
 import com.example.smsgateway.SerialGenerator
+import com.example.smsgateway.SerialGroupCategory
 import com.example.smsgateway.data.GatewayDatabase
 import kotlinx.coroutines.launch
 
@@ -48,6 +53,10 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
     var padWidth by remember { mutableStateOf("0") }
     var description by remember { mutableStateOf("") }
     var score by remember { mutableStateOf("1") }
+    var category by remember { mutableStateOf(SerialGroupCategory.DEFAULT) }
+    var warrantyMonths by remember { mutableStateOf("6") }
+    var warrantyKm by remember { mutableStateOf("") }
+    var imageVerificationRequired by remember { mutableStateOf(false) }
     var totalCount by remember { mutableIntStateOf(0) }
     var dbTotal by remember { mutableIntStateOf(0) }
     var dbUnused by remember { mutableIntStateOf(0) }
@@ -68,6 +77,10 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
             padWidth = padWidth.toInt(),
             description = description.ifBlank { null },
             score = score.toIntOrNull()?.coerceAtLeast(1) ?: 1,
+            category = category,
+            warrantyMonths = warrantyMonths.toIntOrNull()?.takeIf { it > 0 },
+            warrantyKm = warrantyKm.toIntOrNull()?.takeIf { it > 0 },
+            imageVerificationRequired = imageVerificationRequired,
         )
     }
 
@@ -301,6 +314,92 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     enabled = !isGenerating,
                 )
+                Text(
+                    text = stringResource(R.string.serial_group_category_label),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = category == SerialGroupCategory.END_USER_CLIENT,
+                        onClick = { category = SerialGroupCategory.END_USER_CLIENT },
+                        label = { Text(stringResource(R.string.serial_group_category_end_user)) },
+                        enabled = !isGenerating,
+                    )
+                    FilterChip(
+                        selected = category == SerialGroupCategory.SELLER_TO_END_USER,
+                        onClick = { category = SerialGroupCategory.SELLER_TO_END_USER },
+                        label = { Text(stringResource(R.string.serial_group_category_seller)) },
+                        enabled = !isGenerating,
+                    )
+                }
+                OutlinedTextField(
+                    value = warrantyMonths,
+                    onValueChange = {
+                        warrantyMonths = it.filter { ch -> ch.isDigit() }
+                        updatePreview()
+                    },
+                    label = { Text(stringResource(R.string.serial_group_warranty_months_label)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !isGenerating,
+                )
+                OutlinedTextField(
+                    value = warrantyKm,
+                    onValueChange = {
+                        warrantyKm = it.filter { ch -> ch.isDigit() }
+                        updatePreview()
+                    },
+                    label = { Text(stringResource(R.string.serial_group_warranty_km_label)) },
+                    modifier = Modifier.fillMaxWidth(),
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    enabled = !isGenerating,
+                )
+                Text(
+                    text = stringResource(R.string.serial_group_warranty_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Surface(
+                    shape = MaterialTheme.shapes.medium,
+                    tonalElevation = if (imageVerificationRequired) 2.dp else 1.dp,
+                    color = if (imageVerificationRequired) {
+                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Top,
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(end = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = stringResource(R.string.serial_group_image_verify_label),
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                            Text(
+                                text = stringResource(R.string.serial_group_image_verify_hint),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Switch(
+                            checked = imageVerificationRequired,
+                            onCheckedChange = { imageVerificationRequired = it },
+                            enabled = !isGenerating,
+                        )
+                    }
+                }
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
@@ -334,7 +433,7 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
                     onClick = {
                         runCatching {
                             val count = generator.validate(buildRequest())
-                            if (count > SerialGenerator.LARGE_BATCH_THRESHOLD) {
+                            if (count > SerialGenerator.CONFIRM_BATCH_THRESHOLD) {
                                 showConfirmDialog = true
                             } else {
                                 startGeneration()

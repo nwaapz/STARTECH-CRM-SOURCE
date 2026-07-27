@@ -53,10 +53,14 @@ export function recipientStatusLabel(status: string): string {
   switch (status) {
     case 'pending':
       return 'در انتظار'
+    case 'sending':
+      return 'در حال ارسال'
     case 'sent':
       return 'ارسال‌شده'
     case 'failed':
       return 'ناموفق'
+    case 'skipped':
+      return 'رد‌شده (بدون چت ربات)'
     default:
       return status
   }
