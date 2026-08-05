@@ -691,7 +691,7 @@ function crm_handle_settings_routes(mysqli $conn, string $method, string $path):
         unset($saved['token']);
         json_out($saved);
     }
-    if ($path === '/admin/sync-now' && $method === 'POST') {
+    if (($path === '/admin/cloud-sync/get' || $path === '/admin/cloud-sync/send' || $path === '/admin/cloud-sync/pull') && $method === 'POST') {
         json_out(['ok' => true, 'message' => 'Sync is not available on the remote panel']);
     }
 

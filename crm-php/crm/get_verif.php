@@ -90,6 +90,13 @@ $upd = $conn->prepare(
 );
 $upd->bind_param('sisss', $city, $phone, $km, $now, $serial);
 if ($upd->execute()) {
+    $bufHelper = dirname(__DIR__) . '/api/sync/sync_buffer_helpers.php';
+    if (is_file($bufHelper)) {
+        require_once $bufHelper;
+        if (function_exists('sync_buffer_enqueue_serial_lookup')) {
+            sync_buffer_enqueue_serial_lookup($conn, $serial, 'old_serials', 'portal');
+        }
+    }
     http_response_code(200);
     echo json_encode(['message' => 'ثبت با موفقیت انجام شد'], JSON_UNESCAPED_UNICODE);
 } else {

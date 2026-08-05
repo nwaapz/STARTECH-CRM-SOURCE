@@ -12,11 +12,9 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -28,7 +26,7 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.smsgateway.R
 import com.example.smsgateway.license.LicenseChecker
 import com.example.smsgateway.license.LicenseGate
-import kotlinx.coroutines.delay
+import com.example.smsgateway.license.LicenseStore
 
 /**
  * Full-screen blocking dialog when license is DENIED or LOCKED.
@@ -37,15 +35,10 @@ import kotlinx.coroutines.delay
 @Composable
 fun LicenseLockOverlay() {
     val context = LocalContext.current
-    var blocked by remember {
-        mutableStateOf(!LicenseGate.allowsOperationalUse(context))
-    }
-
-    LaunchedEffect(Unit) {
-        while (true) {
-            blocked = !LicenseGate.allowsOperationalUse(context)
-            delay(2_000)
-        }
+    val store = remember { LicenseStore.getInstance(context) }
+    val revision by store.revision.collectAsState()
+    val blocked = remember(revision) {
+        !LicenseGate.allowsOperationalUse(context)
     }
 
     if (!blocked) return
@@ -91,7 +84,6 @@ fun LicenseLockOverlay() {
                             context.getString(R.string.license_check_sent),
                             Toast.LENGTH_SHORT,
                         ).show()
-                        blocked = !LicenseGate.allowsOperationalUse(context)
                     },
                     modifier = Modifier.fillMaxWidth(),
                 ) {

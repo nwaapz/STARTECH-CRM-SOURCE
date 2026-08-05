@@ -87,6 +87,8 @@ export interface ComplexBatchRequest {
   count: number
   letterCount: number
   digitCount: number
+  /** Fixed body pattern (C=letter, D=digit). Omit for random letter positions. */
+  pattern?: string
   /** Optional fixed prefix (e.g. "G"). Omit or empty for no prefix. */
   prefix?: string
   city?: string
@@ -116,6 +118,21 @@ export interface BatchResponse {
   skipped: number
   total: number
   groupId?: number | null
+}
+
+export interface ImportCsvResponse extends BatchResponse {
+  usedInserted?: number
+  unusedInserted?: number
+  invalidCount?: number
+}
+
+export interface ImportCsvMeta {
+  description?: string
+  score?: number
+  category?: SerialGroupCategory
+  warrantyMonths?: number | null
+  warrantyKm?: number | null
+  imageVerificationRequired?: boolean
 }
 
 export interface SerialGroup {

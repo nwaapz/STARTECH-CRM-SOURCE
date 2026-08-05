@@ -12,6 +12,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,6 +42,9 @@ fun SmsEngineSettingsCard(
     var inboundShortCodes by remember {
         mutableStateOf(settingsStore.getMelipayamakInboundShortCodes().joinToString(","))
     }
+    var testModeEnabled by remember { mutableStateOf(settingsStore.isMelipayamakTestModeEnabled()) }
+    var testPhone by remember { mutableStateOf(settingsStore.getMelipayamakTestPhone()) }
+    var respondViaDeviceSim by remember { mutableStateOf(settingsStore.isMelipayamakRespondViaDeviceSim()) }
 
     fun persistMode(mode: SmsEngineMode) {
         engineMode = mode
@@ -82,6 +86,30 @@ fun SmsEngineSettingsCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = stringResource(R.string.settings_sms_engine_panel_respond_device),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_sms_engine_panel_respond_device_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = respondViaDeviceSim,
+                        onCheckedChange = {
+                            respondViaDeviceSim = it
+                            settingsStore.setMelipayamakRespondViaDeviceSim(it)
+                        },
+                    )
+                }
+                if (!respondViaDeviceSim) {
                 OutlinedTextField(
                     value = username,
                     onValueChange = {
@@ -114,6 +142,7 @@ fun SmsEngineSettingsCard(
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
                 )
+                }
                 OutlinedTextField(
                     value = inboundShortCodes,
                     onValueChange = {
@@ -124,6 +153,42 @@ fun SmsEngineSettingsCard(
                     label = { Text(stringResource(R.string.settings_sms_engine_panel_inbound_codes)) },
                     singleLine = true,
                 )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
+                        Text(
+                            text = stringResource(R.string.settings_sms_engine_panel_test_mode),
+                            style = MaterialTheme.typography.bodyLarge,
+                        )
+                        Text(
+                            text = stringResource(R.string.settings_sms_engine_panel_test_mode_hint),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    Switch(
+                        checked = testModeEnabled,
+                        onCheckedChange = {
+                            testModeEnabled = it
+                            settingsStore.setMelipayamakTestModeEnabled(it)
+                        },
+                    )
+                }
+                if (testModeEnabled) {
+                    OutlinedTextField(
+                        value = testPhone,
+                        onValueChange = {
+                            testPhone = it
+                            settingsStore.setMelipayamakTestPhone(it)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.settings_sms_engine_panel_test_phone)) },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    )
+                }
             }
         }
     }

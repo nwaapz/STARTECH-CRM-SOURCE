@@ -196,7 +196,7 @@ onMounted(loadSettings)
               />
               <span>
                 <strong>حالت ۲: ترکیبی (یک پیامک)</strong>
-                <small>ترتیب ارسال مهم نیست. عدد = کیلومتر، متن = شهر، سریال باید در پایگاه موجود باشد.</small>
+                <small>سریال+شهر+کیلومتر در یک پیام، یا فقط سریال (ثبت ناقص) سپس درخواست بقیه. فقط حالت ۱ با سریال کامل می‌شود.</small>
               </span>
             </label>
             <p v-if="config.mode === 'COMBINED_PATTERN'" class="hint">{{ COMBINED_MODE_EXAMPLE }}</p>

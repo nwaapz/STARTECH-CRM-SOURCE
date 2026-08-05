@@ -160,6 +160,8 @@ fun Route.configureHybridCrmRoutes(
             requireUser(call, CrmRoles.MANAGER) ?: return@get
             val pending = withContext(Dispatchers.IO) { database.syncOutboxDao().countPending() }
             val url = settingsStore.getCloudSyncUrl()
+            val progress = CloudSyncService.getInstance(appContext).getProgress()
+            val conflicts = CloudSyncService.getInstance(appContext).getConflictSession()?.conflicts?.size ?: 0
             call.respond(
                 CloudSyncStatusResponse(
                     configured = url.isNotBlank() && settingsStore.getCloudSyncToken().isNotBlank(),
@@ -167,6 +169,20 @@ fun Route.configureHybridCrmRoutes(
                     pendingOutbox = pending,
                     lastPushMs = settingsStore.getCloudSyncLastPushMs(),
                     lastPullMs = settingsStore.getCloudSyncLastPullMs(),
+                    running = progress.running,
+                    phase = progress.phase,
+                    percent = progress.percent,
+                    detail = progress.detail,
+                    pushDone = progress.pushDone,
+                    pushTotal = progress.pushTotal,
+                    pullPage = progress.pullPage,
+                    pullPagesEstimate = progress.pullPagesEstimate,
+                    applyRowsDone = progress.applyRowsDone,
+                    applyRowsTotal = progress.applyRowsTotal,
+                    repairGroupsDone = progress.repairGroupsDone,
+                    repairGroupsTotal = progress.repairGroupsTotal,
+                    conflictCount = maxOf(conflicts, progress.conflictCount),
+                    pendingRemote = progress.pendingRemote,
                 ),
             )
         }
@@ -179,9 +195,24 @@ fun Route.configureHybridCrmRoutes(
             call.respond(OkResponse(ok = true))
         }
 
-        post("/sync-now") {
+        // "Get from server" button: backfill + pull. Applies/acks remote changes, never pushes.
+        post("/cloud-sync/get") {
             requireUser(call, CrmRoles.MANAGER) ?: return@post
-            val result = CloudSyncService.getInstance(appContext).syncOnce()
+            val result = CloudSyncService.getInstance(appContext).requestBackfillAndPull()
+            call.respond(OkResponse(ok = result.ok, message = result.message))
+        }
+
+        // "Send to server" button: upload-only push of the local outbox.
+        post("/cloud-sync/send") {
+            requireUser(call, CrmRoles.MANAGER) ?: return@post
+            val result = CloudSyncService.getInstance(appContext).pushOnce()
+            call.respond(OkResponse(ok = result.ok, message = result.message))
+        }
+
+        // Cheap pull (no backfill), used only by the silent auto-pull-on-page-load hook.
+        post("/cloud-sync/pull") {
+            requireUser(call, CrmRoles.MANAGER) ?: return@post
+            val result = CloudSyncService.getInstance(appContext).pullOnce()
             call.respond(OkResponse(ok = result.ok, message = result.message))
         }
     }

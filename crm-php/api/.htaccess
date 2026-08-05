@@ -4,8 +4,11 @@ RewriteEngine On
 RewriteCond %{HTTP:Authorization} .
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
-# Keep sync/*.php and webhooks/*.php as real files
+# Real files under sync/ (e.g. push.php, buffer/index.php). Do NOT short-circuit
+# on directories alone — /sync/buffer must reach index.php front controller.
+RewriteCond %{REQUEST_FILENAME} -f
 RewriteRule ^sync/ - [L]
+
 RewriteRule ^webhooks/ - [L]
 
 RewriteCond %{REQUEST_FILENAME} !-f

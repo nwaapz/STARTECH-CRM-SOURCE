@@ -1,10 +1,13 @@
 package com.example.smsgateway.ui
 
+import android.content.ActivityNotFoundException
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
+import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -28,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -50,26 +54,63 @@ import com.example.smsgateway.SettingsStore
 import com.example.smsgateway.VerificationMode
 import com.example.smsgateway.data.GatewayDatabase
 import com.example.smsgateway.license.LicenseState
+import com.example.smsgateway.license.LicenseStore
 import com.example.smsgateway.lan.LanHttpServer
 import com.example.smsgateway.lan.LanNetworkUtils
 import com.example.smsgateway.lan.LanQrCodeImage
 import com.example.smsgateway.lan.LanStartupDiagnostics
 import com.example.smsgateway.lan.LanTraceLog
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private const val LAN_POLL_INTERVAL_MS = 2000L
+
+/** The trace pane is a plain scrolling Column, so every line is measured even when off-screen. */
+private const val MAX_VISIBLE_TRACE_LINES = 120
+
+private data class LanPollSnapshot(
+    val port: Int,
+    val pin: String,
+    val autoIp: String,
+    val url: String,
+    val usingCustomHost: Boolean,
+    val serverRunning: Boolean,
+    val traceLines: List<String>,
+)
+
+/** Blocking: enumerates network interfaces and formats trace entries. Call off the UI thread. */
+private fun readLanSnapshot(context: Context, settingsStore: SettingsStore): LanPollSnapshot {
+    val port = settingsStore.getLanPort()
+    val autoIp = LanNetworkUtils.getLocalIpAddress(context)
+    val override = settingsStore.getLanHostOverride()
+    return LanPollSnapshot(
+        port = port,
+        pin = settingsStore.getLanPin(),
+        autoIp = autoIp,
+        url = "http://${override.ifBlank { autoIp }}:$port",
+        usingCustomHost = override.isNotBlank(),
+        serverRunning = LanHttpServer.getInstance(context).isRunning,
+        traceLines = LanTraceLog.snapshot()
+            .take(MAX_VISIBLE_TRACE_LINES)
+            .map { it.formatted() },
+    )
+}
 
 @Composable
 fun SettingsScreen(
     settingsStore: SettingsStore,
     modifier: Modifier = Modifier,
+    openSyncConflicts: Boolean = false,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val generator = remember { SerialGenerator(GatewayDatabase.getInstance(context)) }
 
-    var licenseSummary by remember {
-        mutableStateOf(com.example.smsgateway.license.LicenseStore.getInstance(context).statusSummary())
-    }
+    val licenseStore = remember { LicenseStore.getInstance(context) }
+    val licenseRevision by licenseStore.revision.collectAsState()
+    val licenseSummary = remember(licenseRevision) { licenseStore.statusSummary() }
 
     var verificationMode by remember { mutableStateOf(settingsStore.getVerificationMode()) }
     var lanEnabled by remember { mutableStateOf(settingsStore.isLanServerEnabled()) }
@@ -88,12 +129,20 @@ fun SettingsScreen(
         getAppVersionName(context)
     }
 
+    fun applyLanSnapshot(snapshot: LanPollSnapshot) {
+        lanPort = snapshot.port
+        lanPin = snapshot.pin
+        lanAutoIp = snapshot.autoIp
+        lanUrl = snapshot.url
+        lanUsingCustomHost = snapshot.usingCustomHost
+        lanServerRunning = snapshot.serverRunning
+        lanTraceLines = snapshot.traceLines
+    }
+
     fun refreshLanInfo() {
-        lanPort = settingsStore.getLanPort()
-        lanPin = settingsStore.getLanPin()
-        lanAutoIp = LanNetworkUtils.getLocalIpAddress(context)
-        lanUrl = LanNetworkUtils.buildLanUrl(context, lanPort)
-        lanUsingCustomHost = settingsStore.hasLanHostOverride()
+        scope.launch {
+            applyLanSnapshot(withContext(Dispatchers.IO) { readLanSnapshot(context, settingsStore) })
+        }
     }
 
     fun saveLanHostOverride() {
@@ -137,10 +186,10 @@ fun SettingsScreen(
     LaunchedEffect(lanEnabled) {
         if (!lanEnabled) return@LaunchedEffect
         while (true) {
-            refreshLanInfo()
-            lanTraceLines = LanTraceLog.snapshot().map { it.formatted() }
-            lanServerRunning = LanHttpServer.getInstance(context).isRunning
-            delay(1000)
+            // Interface enumeration and trace formatting are far too slow to run on the
+            // UI thread every tick; they were stalling the whole Settings tab.
+            applyLanSnapshot(withContext(Dispatchers.IO) { readLanSnapshot(context, settingsStore) })
+            delay(LAN_POLL_INTERVAL_MS)
         }
     }
 
@@ -211,8 +260,6 @@ fun SettingsScreen(
                             context.getString(R.string.license_check_sent),
                             Toast.LENGTH_SHORT,
                         ).show()
-                        licenseSummary =
-                            com.example.smsgateway.license.LicenseStore.getInstance(context).statusSummary()
                     },
                 ) {
                     Text(stringResource(R.string.license_check_now))
@@ -389,6 +436,20 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
+                    OutlinedButton(
+                        onClick = {
+                            if (!openHotspotSettings(context)) {
+                                Toast.makeText(
+                                    context,
+                                    context.getString(R.string.settings_lan_open_hotspot_failed),
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(stringResource(R.string.settings_lan_open_hotspot))
+                    }
                 }
             }
         }
@@ -408,7 +469,11 @@ fun SettingsScreen(
                         style = MaterialTheme.typography.bodySmall,
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        TextButton(onClick = { lanTraceLines = LanTraceLog.snapshot().map { it.formatted() } }) {
+                        TextButton(onClick = {
+                            lanTraceLines = LanTraceLog.snapshot()
+                                .take(MAX_VISIBLE_TRACE_LINES)
+                                .map { it.formatted() }
+                        }) {
                             Text(stringResource(R.string.settings_lan_trace_refresh))
                         }
                         TextButton(onClick = {
@@ -419,7 +484,9 @@ fun SettingsScreen(
                         }
                         TextButton(onClick = {
                             LanTraceLog.clear()
-                            lanTraceLines = LanTraceLog.snapshot().map { it.formatted() }
+                            lanTraceLines = LanTraceLog.snapshot()
+                                .take(MAX_VISIBLE_TRACE_LINES)
+                                .map { it.formatted() }
                         }) {
                             Text(stringResource(R.string.settings_lan_trace_clear))
                         }
@@ -466,6 +533,13 @@ fun SettingsScreen(
         }
 
         SmsEngineSettingsCard(settingsStore = settingsStore)
+
+        CloudSyncSettingsCard(
+            settingsStore = settingsStore,
+            openConflicts = openSyncConflicts,
+        )
+
+        BackupSettingsCard(settingsStore = settingsStore)
 
         if (verificationMode == VerificationMode.INTERNAL) {
             SmsProcessingSettingsCard(settingsStore = settingsStore)
@@ -544,6 +618,30 @@ private fun formatDurationFa(ms: Long): String {
 private fun copyToClipboard(context: Context, text: String) {
     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
     clipboard.setPrimaryClip(ClipData.newPlainText("crm_url", text))
+}
+
+/** Opens the system hotspot / tethering settings page (user must toggle hotspot). */
+private fun openHotspotSettings(context: Context): Boolean {
+    val candidates = listOf(
+        Intent("android.settings.TETHER_SETTINGS"),
+        Intent("android.settings.WIFI_TETHER_SETTINGS"),
+        Intent(Settings.ACTION_WIRELESS_SETTINGS),
+        Intent(Settings.ACTION_WIFI_SETTINGS),
+    )
+    for (intent in candidates) {
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        try {
+            if (intent.resolveActivity(context.packageManager) != null) {
+                context.startActivity(intent)
+                return true
+            }
+        } catch (_: ActivityNotFoundException) {
+            // try next
+        } catch (_: SecurityException) {
+            // try next
+        }
+    }
+    return false
 }
 
 @Composable

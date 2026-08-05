@@ -35,6 +35,39 @@ if ($path === '/health' && $method === 'GET') {
     ]);
 }
 
+// Device cloud-sync (Bearer PAYAMESH_SYNC_TOKEN) — before CRM session auth
+if ($path === '/sync/buffer' && $method === 'GET') {
+    require __DIR__ . '/sync/buffer/index.php';
+    exit;
+}
+if ($path === '/sync/buffer/apply' && $method === 'POST') {
+    require __DIR__ . '/sync/buffer/apply.php';
+    exit;
+}
+if ($path === '/sync/buffer/ack' && $method === 'POST') {
+    require __DIR__ . '/sync/buffer/ack.php';
+    exit;
+}
+if ($path === '/sync/buffer/backfill' && $method === 'POST') {
+    require __DIR__ . '/sync/buffer/backfill.php';
+    exit;
+}
+// Legacy hybrid endpoints retired in favor of dual-buffer exchange.
+if (
+    ($path === '/sync/push' && $method === 'POST')
+    || ($path === '/sync/pull' && $method === 'GET')
+    || ($path === '/sync/manifest' && $method === 'GET')
+    || ($path === '/sync/pull/group' && $method === 'GET')
+) {
+    http_response_code(410);
+    header('Content-Type: application/json; charset=utf-8');
+    echo json_encode([
+        'error' => 'Gone',
+        'message' => 'Use /api/sync/buffer, /api/sync/buffer/apply, /api/sync/buffer/ack',
+    ]);
+    exit;
+}
+
 $conn = payamesh_mysqli();
 ensure_remote_schema($conn);
 
@@ -517,6 +550,8 @@ if (preg_match('#^/serials/(\d+)$#', $path, $m) && $method === 'PUT') {
     if (!$got) {
         json_error('Not found', 404);
     }
+    require_once __DIR__ . '/sync/sync_buffer_helpers.php';
+    sync_buffer_enqueue_serial_row($conn, $got);
     require_once __DIR__ . '/activity_store.php';
     crm_activity_record($conn, 'registration_updated', [
         'serial' => (string) ($got['serial'] ?? $serial),
@@ -637,7 +672,9 @@ if (in_array($method, ['POST', 'PUT', 'DELETE'], true)) {
         || starts_with($path, '/lottery')
         || starts_with($path, '/admin/users')
         || $path === '/admin/sync-config'
-        || $path === '/admin/sync-now';
+        || $path === '/admin/cloud-sync/get'
+        || $path === '/admin/cloud-sync/send'
+        || $path === '/admin/cloud-sync/pull';
 
     // DELETE/PUT /serial-groups/{id} are handled above; extend remains LAN-only for now.
     if (!$settingsWriteOk && (

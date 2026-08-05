@@ -1,5 +1,8 @@
 package com.example.smsgateway.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -35,11 +38,17 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.example.smsgateway.PhoneUtils
 import com.example.smsgateway.R
 import com.example.smsgateway.SerialGenerator
 import com.example.smsgateway.SerialGroupCategory
+import com.example.smsgateway.SerialStateCsv
 import com.example.smsgateway.data.GatewayDatabase
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.BufferedReader
+import java.io.InputStreamReader
 
 @Composable
 fun SerialGenerationScreen(modifier: Modifier = Modifier) {
@@ -69,12 +78,33 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
     var deleteTarget by remember { mutableStateOf<SerialGenerator.GroupSummary?>(null) }
     var duplicateException by remember { mutableStateOf<SerialGenerator.DuplicateSerialException?>(null) }
 
+    var csvUri by remember { mutableStateOf<Uri?>(null) }
+    var csvFileName by remember { mutableStateOf<String?>(null) }
+    var csvParseResult by remember { mutableStateOf<SerialStateCsv.ParseResult?>(null) }
+    var csvParsing by remember { mutableStateOf(false) }
+    var csvImporting by remember { mutableStateOf(false) }
+    var csvProgress by remember { mutableStateOf(0f) }
+    var csvError by remember { mutableStateOf<String?>(null) }
+    var csvResult by remember { mutableStateOf<String?>(null) }
+    var showCsvConfirmDialog by remember { mutableStateOf(false) }
+
     fun buildRequest(): SerialGenerator.GenerateRequest {
         return SerialGenerator.GenerateRequest(
             prefix = prefix,
             start = startNumber.toInt(),
             end = endNumber.toInt(),
             padWidth = padWidth.toInt(),
+            description = description.ifBlank { null },
+            score = score.toIntOrNull()?.coerceAtLeast(1) ?: 1,
+            category = category,
+            warrantyMonths = warrantyMonths.toIntOrNull()?.takeIf { it > 0 },
+            warrantyKm = warrantyKm.toIntOrNull()?.takeIf { it > 0 },
+            imageVerificationRequired = imageVerificationRequired,
+        )
+    }
+
+    fun buildCsvMetaRequest(): SerialGenerator.ImportStateMetaRequest {
+        return SerialGenerator.ImportStateMetaRequest(
             description = description.ifBlank { null },
             score = score.toIntOrNull()?.coerceAtLeast(1) ?: 1,
             category = category,
@@ -106,6 +136,54 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
             errorMessage = it.message
             0
         }
+    }
+
+    fun clearCsvSelection() {
+        csvUri = null
+        csvFileName = null
+        csvParseResult = null
+        csvError = null
+        csvResult = null
+        csvProgress = 0f
+    }
+
+    fun parseCsvUri(uri: Uri, displayName: String?) {
+        csvParsing = true
+        csvError = null
+        csvResult = null
+        csvParseResult = null
+        scope.launch {
+            try {
+                val parsed = withContext(Dispatchers.IO) {
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        BufferedReader(InputStreamReader(input, Charsets.UTF_8)).use { reader ->
+                            SerialStateCsv.parse(reader)
+                        }
+                    } ?: throw SerialStateCsv.CsvFormatException("Cannot open CSV file")
+                }
+                csvUri = uri
+                csvFileName = displayName ?: uri.lastPathSegment ?: "import.csv"
+                csvParseResult = parsed
+            } catch (error: Exception) {
+                clearCsvSelection()
+                csvError = error.message
+            } finally {
+                csvParsing = false
+            }
+        }
+    }
+
+    val csvPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val name = runCatching {
+            context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                if (cursor.moveToFirst() && idx >= 0) cursor.getString(idx) else null
+            }
+        }.getOrNull()
+        parseCsvUri(uri, name)
     }
 
     LaunchedEffect(Unit) {
@@ -145,6 +223,40 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
         }
     }
 
+    fun startCsvImport() {
+        val parsed = csvParseResult ?: return
+        // Drop Compose-held parse map ASAP; local [parsed] still used for insert.
+        csvParseResult = null
+        csvImporting = true
+        csvProgress = 0f
+        csvError = null
+        csvResult = null
+        scope.launch {
+            try {
+                val result = generator.generateImportWithState(buildCsvMetaRequest(), parsed) { p ->
+                    csvProgress = p
+                }
+                val message = context.getString(
+                    R.string.serial_csv_import_result,
+                    result.inserted,
+                    result.skipped,
+                    result.usedInserted,
+                    result.unusedInserted,
+                    result.invalidCount,
+                )
+                csvUri = null
+                csvFileName = null
+                csvResult = message
+                refreshStats()
+                refreshGroups()
+            } catch (error: Exception) {
+                csvError = error.message
+            } finally {
+                csvImporting = false
+            }
+        }
+    }
+
     duplicateException?.let { exception ->
         DuplicateSerialWarningDialog(
             exception = exception,
@@ -176,6 +288,41 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
             },
             dismissButton = {
                 TextButton(onClick = { showConfirmDialog = false }) {
+                    Text(stringResource(R.string.serial_generation_confirm_no))
+                }
+            },
+        )
+    }
+
+    if (showCsvConfirmDialog) {
+        val parsed = csvParseResult
+        val usedPreview = parsed?.rowsBySerial?.values?.count { PhoneUtils.isRegisteredPhone(it.phone) } ?: 0
+        val unusedPreview = (parsed?.rowsBySerial?.size ?: 0) - usedPreview
+        AlertDialog(
+            onDismissRequest = { showCsvConfirmDialog = false },
+            title = { Text(stringResource(R.string.serial_csv_import_confirm_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.serial_csv_import_confirm_message,
+                        parsed?.rowsBySerial?.size ?: 0,
+                        usedPreview,
+                        unusedPreview,
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showCsvConfirmDialog = false
+                        startCsvImport()
+                    },
+                ) {
+                    Text(stringResource(R.string.serial_csv_import_button))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showCsvConfirmDialog = false }) {
                     Text(stringResource(R.string.serial_generation_confirm_no))
                 }
             },
@@ -218,6 +365,8 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
         )
     }
 
+    val busy = isGenerating || csvImporting || csvParsing
+
     Column(
         modifier = modifier
             .fillMaxSize()
@@ -225,6 +374,19 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.serial_generation_typo_safe_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+
         Card(modifier = Modifier.fillMaxWidth()) {
             Column(
                 modifier = Modifier.padding(16.dp),
@@ -262,7 +424,7 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
                     label = { Text(stringResource(R.string.serial_prefix_label)) },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    enabled = !isGenerating,
+                    enabled = !busy,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedTextField(
@@ -275,7 +437,7 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        enabled = !isGenerating,
+                        enabled = !busy,
                     )
                     OutlinedTextField(
                         value = endNumber,
@@ -287,7 +449,7 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
                         modifier = Modifier.weight(1f),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        enabled = !isGenerating,
+                        enabled = !busy,
                     )
                 }
                 OutlinedTextField(
@@ -300,113 +462,31 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    enabled = !isGenerating,
+                    enabled = !busy,
                 )
-                OutlinedTextField(
-                    value = score,
-                    onValueChange = {
-                        score = it.filter { ch -> ch.isDigit() }.ifEmpty { "1" }
+                GroupMetaFields(
+                    score = score,
+                    onScoreChange = {
+                        score = it
                         updatePreview()
                     },
-                    label = { Text(stringResource(R.string.serial_group_score_label)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    enabled = !isGenerating,
-                )
-                Text(
-                    text = stringResource(R.string.serial_group_category_label),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(
-                        selected = category == SerialGroupCategory.END_USER_CLIENT,
-                        onClick = { category = SerialGroupCategory.END_USER_CLIENT },
-                        label = { Text(stringResource(R.string.serial_group_category_end_user)) },
-                        enabled = !isGenerating,
-                    )
-                    FilterChip(
-                        selected = category == SerialGroupCategory.SELLER_TO_END_USER,
-                        onClick = { category = SerialGroupCategory.SELLER_TO_END_USER },
-                        label = { Text(stringResource(R.string.serial_group_category_seller)) },
-                        enabled = !isGenerating,
-                    )
-                }
-                OutlinedTextField(
-                    value = warrantyMonths,
-                    onValueChange = {
-                        warrantyMonths = it.filter { ch -> ch.isDigit() }
+                    category = category,
+                    onCategoryChange = { category = it },
+                    warrantyMonths = warrantyMonths,
+                    onWarrantyMonthsChange = {
+                        warrantyMonths = it
                         updatePreview()
                     },
-                    label = { Text(stringResource(R.string.serial_group_warranty_months_label)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    enabled = !isGenerating,
-                )
-                OutlinedTextField(
-                    value = warrantyKm,
-                    onValueChange = {
-                        warrantyKm = it.filter { ch -> ch.isDigit() }
+                    warrantyKm = warrantyKm,
+                    onWarrantyKmChange = {
+                        warrantyKm = it
                         updatePreview()
                     },
-                    label = { Text(stringResource(R.string.serial_group_warranty_km_label)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    enabled = !isGenerating,
-                )
-                Text(
-                    text = stringResource(R.string.serial_group_warranty_hint),
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Surface(
-                    shape = MaterialTheme.shapes.medium,
-                    tonalElevation = if (imageVerificationRequired) 2.dp else 1.dp,
-                    color = if (imageVerificationRequired) {
-                        MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
-                    } else {
-                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.Top,
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(end = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                text = stringResource(R.string.serial_group_image_verify_label),
-                                style = MaterialTheme.typography.titleSmall,
-                            )
-                            Text(
-                                text = stringResource(R.string.serial_group_image_verify_hint),
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                        Switch(
-                            checked = imageVerificationRequired,
-                            onCheckedChange = { imageVerificationRequired = it },
-                            enabled = !isGenerating,
-                        )
-                    }
-                }
-                OutlinedTextField(
-                    value = description,
-                    onValueChange = { description = it },
-                    label = { Text(stringResource(R.string.serial_group_description_label)) },
-                    modifier = Modifier.fillMaxWidth(),
-                    minLines = 2,
-                    enabled = !isGenerating,
+                    imageVerificationRequired = imageVerificationRequired,
+                    onImageVerificationChange = { imageVerificationRequired = it },
+                    description = description,
+                    onDescriptionChange = { description = it },
+                    enabled = !busy,
                 )
 
                 Text(
@@ -443,13 +523,124 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
                         }
                     },
                     modifier = Modifier.fillMaxWidth(),
-                    enabled = !isGenerating && totalCount > 0,
+                    enabled = !busy && totalCount > 0,
                 ) {
                     Text(stringResource(R.string.serial_generate_button))
                 }
 
                 resultMessage?.let {
                     Text(text = it, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+
+        Card(modifier = Modifier.fillMaxWidth()) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.serial_csv_import_title),
+                    style = MaterialTheme.typography.titleMedium,
+                )
+                Text(
+                    text = stringResource(R.string.serial_csv_import_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    text = stringResource(R.string.serial_csv_import_columns),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Text(
+                    text = stringResource(R.string.serial_csv_import_sample),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = stringResource(
+                        R.string.serial_csv_import_max,
+                        SerialStateCsv.MAX_ROWS,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                )
+
+                OutlinedButton(
+                    onClick = {
+                        csvPicker.launch(arrayOf("text/*", "text/csv", "application/csv", "*/*"))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !busy,
+                ) {
+                    Text(stringResource(R.string.serial_csv_import_pick))
+                }
+
+                if (csvParsing) {
+                    Text(stringResource(R.string.serial_csv_import_parsing))
+                }
+
+                csvFileName?.let { name ->
+                    Text(
+                        stringResource(
+                            R.string.serial_csv_import_file,
+                            name,
+                            csvParseResult?.rowsBySerial?.size ?: 0,
+                        ),
+                    )
+                }
+
+                csvParseResult?.stats?.invalidSamples?.takeIf { it.isNotEmpty() }?.let { samples ->
+                    Text(
+                        text = samples.joinToString("، "),
+                        color = MaterialTheme.colorScheme.error,
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+
+                if (csvImporting) {
+                    LinearProgressIndicator(
+                        progress = { csvProgress },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+
+                csvError?.let {
+                    Text(text = it, color = MaterialTheme.colorScheme.error)
+                }
+                csvResult?.let {
+                    Text(text = it, style = MaterialTheme.typography.bodyMedium)
+                }
+
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = {
+                            val parsed = csvParseResult
+                            if (parsed == null) {
+                                csvError = context.getString(R.string.serial_csv_import_no_file)
+                                return@Button
+                            }
+                            runCatching {
+                                generator.validateImportMetaOnly(buildCsvMetaRequest())
+                            }.onFailure {
+                                csvError = it.message
+                                return@Button
+                            }
+                            if (parsed.rowsBySerial.size > SerialGenerator.CONFIRM_BATCH_THRESHOLD) {
+                                showCsvConfirmDialog = true
+                            } else {
+                                startCsvImport()
+                            }
+                        },
+                        modifier = Modifier.weight(1f),
+                        enabled = !busy && csvParseResult != null,
+                    ) {
+                        Text(stringResource(R.string.serial_csv_import_button))
+                    }
+                    OutlinedButton(
+                        onClick = { clearCsvSelection() },
+                        enabled = !busy && (csvFileName != null || csvResult != null),
+                    ) {
+                        Text(stringResource(R.string.serial_csv_import_clear))
+                    }
                 }
             }
         }
@@ -478,4 +669,119 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
             }
         }
     }
+}
+
+@Composable
+private fun GroupMetaFields(
+    score: String,
+    onScoreChange: (String) -> Unit,
+    category: String,
+    onCategoryChange: (String) -> Unit,
+    warrantyMonths: String,
+    onWarrantyMonthsChange: (String) -> Unit,
+    warrantyKm: String,
+    onWarrantyKmChange: (String) -> Unit,
+    imageVerificationRequired: Boolean,
+    onImageVerificationChange: (Boolean) -> Unit,
+    description: String,
+    onDescriptionChange: (String) -> Unit,
+    enabled: Boolean,
+) {
+    OutlinedTextField(
+        value = score,
+        onValueChange = { onScoreChange(it.filter { ch -> ch.isDigit() }.ifEmpty { "1" }) },
+        label = { Text(stringResource(R.string.serial_group_score_label)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        enabled = enabled,
+    )
+    Text(
+        text = stringResource(R.string.serial_group_category_label),
+        style = MaterialTheme.typography.bodyMedium,
+    )
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        FilterChip(
+            selected = category == SerialGroupCategory.END_USER_CLIENT,
+            onClick = { onCategoryChange(SerialGroupCategory.END_USER_CLIENT) },
+            label = { Text(stringResource(R.string.serial_group_category_end_user)) },
+            enabled = enabled,
+        )
+        FilterChip(
+            selected = category == SerialGroupCategory.SELLER_TO_END_USER,
+            onClick = { onCategoryChange(SerialGroupCategory.SELLER_TO_END_USER) },
+            label = { Text(stringResource(R.string.serial_group_category_seller)) },
+            enabled = enabled,
+        )
+    }
+    OutlinedTextField(
+        value = warrantyMonths,
+        onValueChange = { onWarrantyMonthsChange(it.filter { ch -> ch.isDigit() }) },
+        label = { Text(stringResource(R.string.serial_group_warranty_months_label)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        enabled = enabled,
+    )
+    OutlinedTextField(
+        value = warrantyKm,
+        onValueChange = { onWarrantyKmChange(it.filter { ch -> ch.isDigit() }) },
+        label = { Text(stringResource(R.string.serial_group_warranty_km_label)) },
+        modifier = Modifier.fillMaxWidth(),
+        singleLine = true,
+        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+        enabled = enabled,
+    )
+    Text(
+        text = stringResource(R.string.serial_group_warranty_hint),
+        style = MaterialTheme.typography.bodySmall,
+    )
+    Surface(
+        shape = MaterialTheme.shapes.medium,
+        tonalElevation = if (imageVerificationRequired) 2.dp else 1.dp,
+        color = if (imageVerificationRequired) {
+            MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)
+        },
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.serial_group_image_verify_label),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+                Text(
+                    text = stringResource(R.string.serial_group_image_verify_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Switch(
+                checked = imageVerificationRequired,
+                onCheckedChange = onImageVerificationChange,
+                enabled = enabled,
+            )
+        }
+    }
+    OutlinedTextField(
+        value = description,
+        onValueChange = onDescriptionChange,
+        label = { Text(stringResource(R.string.serial_group_description_label)) },
+        modifier = Modifier.fillMaxWidth(),
+        minLines = 2,
+        enabled = enabled,
+    )
 }

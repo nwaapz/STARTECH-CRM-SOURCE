@@ -71,7 +71,7 @@ interface SerialPhotoSubmissionDao {
         """
         UPDATE serial_photo_submissions
         SET serial = :newSerial
-        WHERE UPPER(serial) = UPPER(:oldSerial)
+        WHERE serial = :oldSerial
           AND phone = :phone
         """,
     )

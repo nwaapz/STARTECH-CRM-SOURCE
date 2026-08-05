@@ -196,10 +196,24 @@ function sw_ensure_columns(mysqli $conn, string $table): void
     }
 
     // Backfill timestamps so unused + registered rows are pullable on first sync.
+    // Invalid/zero MySQL dates make UNIX_TIMESTAMP NULL — fall back to row id.
     if (column_exists($conn, $table, 'sync_updated_ms')) {
         @$conn->query(
-            "UPDATE `$table` SET sync_updated_ms = UNIX_TIMESTAMP(IFNULL(time, NOW())) * 1000
+            "UPDATE `$table` SET sync_updated_ms = COALESCE(
+                NULLIF(UNIX_TIMESTAMP(NULLIF(time, '0000-00-00 00:00:00')), 0) * 1000,
+                id
+             )
              WHERE sync_updated_ms IS NULL OR sync_updated_ms = 0"
+        );
+        // Unused stock: stable low timestamps (1e12+id) so a full sync pulls
+        // inventory before old registrations. Also fixes rows wrongly stamped with NOW().
+        @$conn->query(
+            "UPDATE `$table` SET sync_updated_ms = (1000000000000 + id)
+             WHERE (phone IS NULL OR TRIM(phone) = '')
+               AND (
+                 sync_updated_ms IS NULL OR sync_updated_ms = 0
+                 OR sync_updated_ms > 1700000000000
+               )"
         );
     }
 
@@ -1086,6 +1100,9 @@ function sw_handle_range(mysqli $conn, array $body): void
             'groupId' => $groupId,
             'message' => 'افزودن ' . $inserted . ' سریال (بازه)',
         ]);
+        require_once __DIR__ . '/sync/sync_buffer_helpers.php';
+        $gRow = $conn->query('SELECT * FROM serial_groups WHERE id=' . (int) $groupId)->fetch_assoc() ?: [];
+        sync_buffer_enqueue_generation($conn, $groupId, $serials, $category, $gRow);
     }
 
     json_out([
@@ -1096,8 +1113,22 @@ function sw_handle_range(mysqli $conn, array $body): void
     ]);
 }
 
-function sw_random_complex_serial(string $prefix, int $letterCount, int $digitCount): string
+function sw_random_complex_serial(string $prefix, int $letterCount, int $digitCount, ?string $pattern = null): string
 {
+    if ($pattern !== null && $pattern !== '') {
+        $body = '';
+        $len = strlen($pattern);
+        for ($i = 0; $i < $len; $i++) {
+            $slot = $pattern[$i];
+            if ($slot === 'C') {
+                $body .= SW_COMPLEX_LETTERS[random_int(0, strlen(SW_COMPLEX_LETTERS) - 1)];
+            } elseif ($slot === 'D') {
+                $body .= SW_COMPLEX_DIGITS[random_int(0, strlen(SW_COMPLEX_DIGITS) - 1)];
+            }
+        }
+        return $prefix . $body;
+    }
+
     $length = $letterCount + $digitCount;
     $positions = range(0, $length - 1);
     shuffle($positions);
@@ -1112,6 +1143,13 @@ function sw_random_complex_serial(string $prefix, int $letterCount, int $digitCo
         }
     }
     return $prefix . $body;
+}
+
+function sw_estimate_max_distinct_fixed(int $letterCount, int $digitCount): float
+{
+    $letterAlpha = strlen(SW_COMPLEX_LETTERS);
+    $digitAlpha = strlen(SW_COMPLEX_DIGITS);
+    return ($letterAlpha ** $letterCount) * ($digitAlpha ** $digitCount);
 }
 
 function sw_estimate_max_distinct(int $letterCount, int $digitCount): float
@@ -1153,11 +1191,30 @@ function sw_handle_complex(mysqli $conn, array $body): void
     if ($letterCount === 0 && $digitCount === 0) {
         json_error('At least one letter or digit is required.', 400);
     }
+    $patternRaw = isset($body['pattern']) ? trim((string) $body['pattern']) : '';
+    $pattern = $patternRaw !== '' ? strtoupper($patternRaw) : null;
+    if ($pattern !== null && !preg_match('/^[CD]+$/', $pattern)) {
+        json_error('Pattern may only contain C (letter) and D (digit).', 400);
+    }
     $prefix = sw_norm((string) ($body['prefix'] ?? ''));
     if ($prefix !== '' && !preg_match('/^[A-Z0-9]+$/', $prefix)) {
         json_error('Prefix may only contain letters and digits.', 400);
     }
     $bodyLength = $letterCount + $digitCount;
+    if ($pattern !== null) {
+        if (strlen($pattern) !== $bodyLength) {
+            json_error('Pattern length must match body length (letters + digits).', 400);
+        }
+        $patternLetters = substr_count($pattern, 'C');
+        $patternDigits = substr_count($pattern, 'D');
+        if ($patternLetters !== $letterCount || $patternDigits !== $digitCount) {
+            json_error(
+                'Pattern must contain exactly ' . $letterCount . ' letters (C) and '
+                . $digitCount . ' digits (D).',
+                400
+            );
+        }
+    }
     if ($bodyLength < SW_MIN_COMPLEX_LENGTH || $bodyLength > SW_MAX_SERIAL_LENGTH) {
         json_error('Random body length (letters + digits) must be between ' . SW_MIN_COMPLEX_LENGTH . ' and ' . SW_MAX_SERIAL_LENGTH . '.', 400);
     }
@@ -1168,7 +1225,9 @@ function sw_handle_complex(mysqli $conn, array $body): void
     $category = sw_require_category($body['category'] ?? '');
     [$wMonths, $wKm] = sw_require_warranty($body['warrantyMonths'] ?? null, $body['warrantyKm'] ?? null);
 
-    $maxDistinct = sw_estimate_max_distinct($letterCount, $digitCount);
+    $maxDistinct = $pattern !== null
+        ? sw_estimate_max_distinct_fixed($letterCount, $digitCount)
+        : sw_estimate_max_distinct($letterCount, $digitCount);
     if ($count > $maxDistinct) {
         json_error('Requested count exceeds maximum unique serials for this composition (' . (int) $maxDistinct . ').', 400);
     }
@@ -1191,7 +1250,7 @@ function sw_handle_complex(mysqli $conn, array $body): void
         $candidates = [];
         $guard = 0;
         while (count($candidates) < $batchSize && $guard < $batchSize * 20) {
-            $candidates[sw_random_complex_serial($prefix, $letterCount, $digitCount)] = true;
+            $candidates[sw_random_complex_serial($prefix, $letterCount, $digitCount, $pattern)] = true;
             $guard++;
             $attempts++;
         }
@@ -1242,6 +1301,9 @@ function sw_handle_complex(mysqli $conn, array $body): void
             'groupId' => $groupId,
             'message' => 'افزودن ' . $inserted . ' سریال (پیچیده)',
         ]);
+        require_once __DIR__ . '/sync/sync_buffer_helpers.php';
+        $gRow = $conn->query('SELECT * FROM serial_groups WHERE id=' . (int) $groupId)->fetch_assoc() ?: [];
+        sync_buffer_enqueue_generation($conn, $groupId, $serials, $category, $gRow);
     }
 
     json_out([
@@ -1307,7 +1369,9 @@ function sw_handle_import(mysqli $conn, array $body): void
     $uniqueList = array_keys($uniqueOrdered);
 
     $existing = sw_existing_serials($conn, $table, $uniqueList);
-    $toInsert = array_values(array_filter($uniqueList, static fn($s) => !isset($existing[$s])));
+    $toInsert = array_values(array_filter($uniqueList, static function ($s) use ($existing) {
+        return !isset($existing[$s]);
+    }));
     $skippedExisting = count($uniqueList) - count($toInsert);
     $skipped = $skippedInFile + $skippedExisting;
 

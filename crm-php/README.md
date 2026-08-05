@@ -45,15 +45,21 @@ php install/set_serial_category.php --category=seller_to_end_user --s-from=44000
 php install/set_serial_category.php --category=end_user_client --s-from=1 --s-to=1000
 ```
 
-## Phone sync
+## Phone sync (dual-buffer)
 
 1. Set `$PAYAMESH_SYNC_TOKEN` in `config/database.php` (or `crm_sync_meta.device_token`).
-2. App → Admin Setup: Cloud sync URL = base folder that contains `api/`, paste token.
-3. Endpoints:
-   - `POST /api/sync/push` — outbox events: `serial_upsert`, `serial_batch_upsert`, `group_upsert`, `group_delete` (+ activity/lottery). Last-write-wins on `sync_updated_ms`.
-   - `GET /api/sync/pull?since=` — returns `{ cursor, hasMore, serials, groups, deletedGroups }` (unused + registered inventory, groups, delete tombstones).
-4. Phone runs background sync ~every 10 minutes when URL/token are configured (Admin “sync now” still works).
-5. Group ID mapping: phone `serial_groups.syncOriginGroupId` ↔ MySQL `serial_groups.id`; MySQL `sync_origin_lan_id` ↔ phone local group id.
+2. App / LAN Admin Setup: Cloud sync URL = base folder that contains `api/`, paste token.
+3. Endpoints (device token):
+   - `GET /api/sync/buffer` — list remote pending change-buffer entries.
+   - `POST /api/sync/buffer/apply` — apply phone buffer entries onto remote MySQL.
+   - `POST /api/sync/buffer/ack` — mark remote buffer entries cleared after phone apply.
+   - `POST /api/sync/buffer/backfill` — re-enqueue the most recently registered serials (count-based, up to 5000) as pending so a phone/LAN web that's behind (e.g. after loading a stale CSV/backup) can pull them. Called as the first step of "Get from server", not on its own.
+4. Buffered: registrations, report edits, serial generation (+ groups). **Not buffered:** CSV import.
+5. Same serial in both pending buffers with different data → conflict popup on the phone (pick local or remote); the LAN web "Send to server" action just holds back conflicting serials as pending (no popup) since resolution only happens on the phone.
+6. **No periodic/background sync.** Pull ("Get from server") and push ("Send to server") are separate one-directional buttons on both the Android app and the LAN CRM web Admin Setup page. Two silent, event-driven auto-triggers exist: the LAN web app does a cheap pull (no backfill) once per page load, and the Android app does a debounced push shortly after any local registration/edit — both no-op quietly if the server isn't reachable, leaving the change pending for the next manual tap.
+7. Group ID mapping: phone `serial_groups.syncOriginGroupId` ↔ MySQL `serial_groups.id`; MySQL `sync_origin_lan_id` ↔ phone local group id.
+
+Legacy `/api/sync/push`, `/pull`, `/manifest` return **410 Gone**.
 
 ## Dates
 

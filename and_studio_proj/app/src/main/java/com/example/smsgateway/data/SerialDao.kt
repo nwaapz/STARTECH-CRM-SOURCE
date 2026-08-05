@@ -7,8 +7,17 @@ import androidx.room.Query
 
 @Dao
 interface SerialDao {
-    @Query("SELECT * FROM gateway_db WHERE UPPER(serial) = UPPER(:serial) LIMIT 1")
+    /**
+     * Exact match on the unique [serial] index.
+     * Callers must pass [com.example.smsgateway.SerialNormalizer.normalizeSerial] output
+     * (trimmed uppercase) — do not wrap the column in UPPER() or SQLite cannot use the index.
+     */
+    @Query("SELECT * FROM gateway_db WHERE serial = :serial LIMIT 1")
     suspend fun findBySerial(serial: String): SerialEntity?
+
+    /** Exact match; [upperSerials] must already be normalized uppercase. */
+    @Query("SELECT * FROM gateway_db WHERE serial IN (:upperSerials)")
+    suspend fun findByUpperSerials(upperSerials: List<String>): List<SerialEntity>
 
     @Query("SELECT * FROM gateway_db WHERE id = :id LIMIT 1")
     suspend fun findById(id: Long): SerialEntity?
@@ -17,7 +26,7 @@ interface SerialDao {
         """
         SELECT * FROM gateway_db
         WHERE phone = :phone
-          AND phone IS NOT NULL AND phone != ''
+          AND phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND registrationFieldsComplete = 0
         ORDER BY id DESC
         LIMIT 1
@@ -29,7 +38,7 @@ interface SerialDao {
         """
         SELECT city FROM gateway_db
         WHERE phone = :phone
-          AND phone IS NOT NULL AND phone != ''
+          AND phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND city IS NOT NULL AND TRIM(city) != ''
         ORDER BY id DESC
         LIMIT 1
@@ -51,7 +60,7 @@ interface SerialDao {
         """
         UPDATE gateway_db
         SET city = :city, km = :km, registrationFieldsComplete = :fieldsComplete
-        WHERE UPPER(serial) = UPPER(:serial)
+        WHERE serial = :serial
           AND phone = :phone
         """,
     )
@@ -71,10 +80,10 @@ interface SerialDao {
             city = :city,
             km = :km,
             registrationFieldsComplete = CASE
-                WHEN phone IS NOT NULL AND phone != ''
+                WHEN phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
                      AND (:city IS NOT NULL AND :city != '')
                      AND (:requiresKm = 0 OR :km IS NOT NULL) THEN 1
-                WHEN phone IS NOT NULL AND phone != '' THEN 0
+                WHEN phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0' THEN 0
                 ELSE registrationFieldsComplete
             END
         WHERE id = :id
@@ -93,7 +102,7 @@ interface SerialDao {
         """
         UPDATE gateway_db
         SET completionReminderSentAt = :sentAt
-        WHERE UPPER(serial) = UPPER(:serial)
+        WHERE serial = :serial
         """,
     )
     suspend fun markCompletionReminderSent(serial: String, sentAt: Long): Int
@@ -103,8 +112,8 @@ interface SerialDao {
         UPDATE gateway_db
         SET phone = :phone, date = :date, registrationFieldsComplete = 1,
             registrationSubscriptionId = :subscriptionId, registrationSource = :registrationSource
-        WHERE UPPER(serial) = UPPER(:serial)
-          AND (phone IS NULL OR phone = '')
+        WHERE serial = :serial
+          AND (phone IS NULL OR TRIM(phone) = '' OR TRIM(phone) = '0')
         """,
     )
     suspend fun registerSerial(
@@ -120,8 +129,8 @@ interface SerialDao {
         UPDATE gateway_db
         SET phone = :phone, date = :date, registrationFieldsComplete = 0,
             registrationSubscriptionId = :subscriptionId, registrationSource = :registrationSource
-        WHERE UPPER(serial) = UPPER(:serial)
-          AND (phone IS NULL OR phone = '')
+        WHERE serial = :serial
+          AND (phone IS NULL OR TRIM(phone) = '' OR TRIM(phone) = '0')
         """,
     )
     suspend fun registerPartialSerial(
@@ -136,7 +145,7 @@ interface SerialDao {
         """
         UPDATE gateway_db
         SET registrationFieldsComplete = 0, registrationSubscriptionId = :subscriptionId
-        WHERE UPPER(serial) = UPPER(:serial)
+        WHERE serial = :serial
           AND phone = :phone
         """,
     )
@@ -157,8 +166,8 @@ interface SerialDao {
             END,
             registrationSubscriptionId = :subscriptionId,
             registrationSource = :registrationSource
-        WHERE UPPER(serial) = UPPER(:serial)
-          AND (phone IS NULL OR phone = '')
+        WHERE serial = :serial
+          AND (phone IS NULL OR TRIM(phone) = '' OR TRIM(phone) = '0')
         """,
     )
     suspend fun registerSerialWithFields(
@@ -180,7 +189,7 @@ interface SerialDao {
     @Query(
         """
         SELECT MIN(id) FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND phone LIKE '%' || :national
         """,
     )
@@ -189,22 +198,51 @@ interface SerialDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insertAll(entities: List<SerialEntity>): List<Long>
 
-    @Query("SELECT UPPER(serial) FROM gateway_db WHERE UPPER(serial) IN (:upperSerials)")
-    suspend fun findExistingUpperSerials(upperSerials: List<String>): List<String>
+    @Query("SELECT * FROM gateway_db WHERE serial IN (:serials)")
+    suspend fun findBySerials(serials: List<String>): List<SerialEntity>
+
+    /** Returns serial values already in DB (input should be normalized uppercase). */
+    @Query("SELECT serial FROM gateway_db WHERE serial IN (:serials)")
+    suspend fun findExistingUpperSerials(serials: List<String>): List<String>
+
+    @Query(
+        """
+        UPDATE gateway_db
+        SET groupId = :groupId
+        WHERE serial IN (:serials)
+          AND groupId IS NULL
+        """,
+    )
+    suspend fun linkGroupIdIfNullBatch(serials: List<String>, groupId: Long): Int
 
     @Query("SELECT COUNT(*) FROM gateway_db")
     suspend fun countAll(): Int
 
-    @Query("SELECT COUNT(*) FROM gateway_db WHERE phone IS NULL OR phone = ''")
+    @Query("SELECT COUNT(*) FROM gateway_db WHERE " + RegisteredPhoneSql.IS_UNUSED)
     suspend fun countUnused(): Int
 
+    @Query("SELECT COUNT(*) FROM gateway_db WHERE " + RegisteredPhoneSql.IS_REGISTERED)
+    suspend fun countRegistered(): Int
+
+    /**
+     * One pass over [gateway_db] for all group totals (avoids N×COUNT per group card).
+     */
     @Query(
         """
-        SELECT COUNT(*) FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        SELECT groupId AS groupId,
+               COUNT(*) AS total,
+               CAST(
+                 SUM(
+                   CASE WHEN phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
+                   THEN 1 ELSE 0 END
+                 ) AS INTEGER
+               ) AS used
+        FROM gateway_db
+        WHERE groupId IS NOT NULL
+        GROUP BY groupId
         """,
     )
-    suspend fun countRegistered(): Int
+    suspend fun countTotalsByGroup(): List<GroupIdCountRow>
 
     @Query(
         """
@@ -268,7 +306,7 @@ interface SerialDao {
         """
         SELECT gateway_db.* FROM gateway_db
         LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
-        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+        WHERE gateway_db.phone IS NOT NULL AND TRIM(gateway_db.phone) != '' AND TRIM(gateway_db.phone) != '0'
           AND (:fromDate = '' OR substr(gateway_db.date, 1, 10) >= substr(:fromDate, 1, 10))
           AND (:toDate = '' OR substr(gateway_db.date, 1, 10) <= substr(:toDate, 1, 10))
           AND (
@@ -329,7 +367,7 @@ interface SerialDao {
         """
         SELECT gateway_db.* FROM gateway_db
         LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
-        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+        WHERE gateway_db.phone IS NOT NULL AND TRIM(gateway_db.phone) != '' AND TRIM(gateway_db.phone) != '0'
           AND (:fromDate = '' OR substr(gateway_db.date, 1, 10) >= substr(:fromDate, 1, 10))
           AND (:toDate = '' OR substr(gateway_db.date, 1, 10) <= substr(:toDate, 1, 10))
           AND (
@@ -387,7 +425,7 @@ interface SerialDao {
         """
         SELECT COUNT(*) FROM gateway_db
         LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
-        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+        WHERE gateway_db.phone IS NOT NULL AND TRIM(gateway_db.phone) != '' AND TRIM(gateway_db.phone) != '0'
           AND (:fromDate = '' OR substr(gateway_db.date, 1, 10) >= substr(:fromDate, 1, 10))
           AND (:toDate = '' OR substr(gateway_db.date, 1, 10) <= substr(:toDate, 1, 10))
           AND (
@@ -443,7 +481,7 @@ interface SerialDao {
     @Query(
         """
         SELECT * FROM gateway_db
-        WHERE (phone IS NULL OR phone = '')
+        WHERE (phone IS NULL OR TRIM(phone) = '' OR TRIM(phone) = '0')
           AND (:search = '' OR serial LIKE '%' || :search || '%')
         ORDER BY id DESC
         LIMIT :limit OFFSET :offset
@@ -458,7 +496,7 @@ interface SerialDao {
     @Query(
         """
         SELECT COUNT(*) FROM gateway_db
-        WHERE (phone IS NULL OR phone = '')
+        WHERE (phone IS NULL OR TRIM(phone) = '' OR TRIM(phone) = '0')
           AND (:search = '' OR serial LIKE '%' || :search || '%')
         """,
     )
@@ -499,10 +537,39 @@ interface SerialDao {
         """
         UPDATE gateway_db
         SET syncUpdatedMs = :syncUpdatedMs
-        WHERE UPPER(serial) = UPPER(:serial)
+        WHERE serial = :serial
         """,
     )
     suspend fun touchSyncUpdatedMs(serial: String, syncUpdatedMs: Long): Int
+
+    /**
+     * Apply buffer sync fields with force overwrite (no LWW).
+     */
+    @Query(
+        """
+        UPDATE gateway_db
+        SET phone = :phone,
+            date = :date,
+            city = :city,
+            km = :km,
+            registrationFieldsComplete = :fieldsComplete,
+            registrationSource = :registrationSource,
+            groupId = :groupId,
+            syncUpdatedMs = :syncUpdatedMs
+        WHERE serial = :serial
+        """,
+    )
+    suspend fun applyBufferUpsert(
+        serial: String,
+        phone: String?,
+        date: String?,
+        city: String?,
+        km: Int?,
+        fieldsComplete: Boolean,
+        registrationSource: String?,
+        groupId: Long?,
+        syncUpdatedMs: Long,
+    ): Int
 
     /**
      * Apply remote/cloud LWW fields when incoming syncUpdatedMs is >= local.
@@ -518,7 +585,7 @@ interface SerialDao {
             registrationSource = :registrationSource,
             groupId = :groupId,
             syncUpdatedMs = :syncUpdatedMs
-        WHERE UPPER(serial) = UPPER(:serial)
+        WHERE serial = :serial
           AND syncUpdatedMs <= :syncUpdatedMs
         """,
     )
@@ -536,8 +603,18 @@ interface SerialDao {
 
     @Query(
         """
+        UPDATE gateway_db
+        SET groupId = :groupId
+        WHERE serial = :serial
+          AND groupId IS NULL
+        """,
+    )
+    suspend fun setGroupIdIfNull(serial: String, groupId: Long): Int
+
+    @Query(
+        """
         SELECT phone, city FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND (:fromDate = '' OR substr(date, 1, 10) >= substr(:fromDate, 1, 10))
           AND (:toDate = '' OR substr(date, 1, 10) <= substr(:toDate, 1, 10))
         GROUP BY phone
@@ -551,7 +628,7 @@ interface SerialDao {
     @Query(
         """
         SELECT phone FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND substr(date, 1, 10) = :targetDate
         GROUP BY phone
         """,
@@ -562,7 +639,7 @@ interface SerialDao {
         """
         SELECT gateway_db.phone FROM gateway_db
         LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
-        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+        WHERE gateway_db.phone IS NOT NULL AND TRIM(gateway_db.phone) != '' AND TRIM(gateway_db.phone) != '0'
           AND substr(gateway_db.date, 1, 10) = :targetDate
           AND (
             (:serialCategory = 'end_user_client' AND (
@@ -584,7 +661,7 @@ interface SerialDao {
     @Query(
         """
         SELECT phone FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND substr(date, 1, 10) = :targetDate
           AND groupId IN (:groupIds)
         GROUP BY phone
@@ -606,7 +683,7 @@ interface SerialDao {
         """
         SELECT gateway_db.phone AS phone, gateway_db.date AS date FROM gateway_db
         LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
-        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+        WHERE gateway_db.phone IS NOT NULL AND TRIM(gateway_db.phone) != '' AND TRIM(gateway_db.phone) != '0'
           AND (
             (:serialCategory = 'end_user_client' AND (
               serial_groups.category = 'end_user_client'
@@ -625,7 +702,7 @@ interface SerialDao {
     @Query(
         """
         SELECT phone, date FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND groupId IN (:groupIds)
         """,
     )
@@ -642,7 +719,7 @@ interface SerialDao {
         SELECT gateway_db.serial AS serial, gateway_db.date AS date, gateway_db.km AS km FROM gateway_db
         LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
         WHERE gateway_db.phone = :phone
-          AND gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND gateway_db.phone IS NOT NULL AND TRIM(gateway_db.phone) != '' AND TRIM(gateway_db.phone) != '0'
           AND (
             (:serialCategory = 'end_user_client' AND (
               serial_groups.category = 'end_user_client'
@@ -664,7 +741,7 @@ interface SerialDao {
         """
         SELECT serial, date, km FROM gateway_db
         WHERE phone = :phone
-          AND phone IS NOT NULL AND phone != ''
+          AND phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND groupId IN (:groupIds)
         ORDER BY id ASC
         """,
@@ -681,7 +758,7 @@ interface SerialDao {
     @Query(
         """
         SELECT phone, serial, date, km FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND serial IS NOT NULL AND serial != ''
           AND groupId IN (:groupIds)
         """,
@@ -695,7 +772,7 @@ interface SerialDao {
         SELECT gateway_db.phone AS phone, gateway_db.serial AS serial,
                gateway_db.date AS date, gateway_db.km AS km FROM gateway_db
         LEFT JOIN serial_groups ON gateway_db.groupId = serial_groups.id
-        WHERE gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+        WHERE gateway_db.phone IS NOT NULL AND TRIM(gateway_db.phone) != '' AND TRIM(gateway_db.phone) != '0'
           AND gateway_db.serial IS NOT NULL AND gateway_db.serial != ''
           AND (
             (:serialCategory = 'end_user_client' AND (
@@ -715,7 +792,7 @@ interface SerialDao {
     @Query(
         """
         SELECT phone, city FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND groupId IN (:groupIds)
           AND (:fromDate = '' OR substr(date, 1, 10) >= substr(:fromDate, 1, 10))
           AND (:toDate = '' OR substr(date, 1, 10) <= substr(:toDate, 1, 10))
@@ -731,7 +808,7 @@ interface SerialDao {
     @Query(
         """
         SELECT COUNT(*) FROM gateway_db
-        WHERE phone = :phone AND phone IS NOT NULL AND phone != ''
+        WHERE phone = :phone AND phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND serial LIKE 'M%'
         """,
     )
@@ -740,7 +817,7 @@ interface SerialDao {
     @Query(
         """
         SELECT COUNT(*) FROM gateway_db
-        WHERE phone = :phone AND phone IS NOT NULL AND phone != ''
+        WHERE phone = :phone AND phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND registrationFieldsComplete = 1
         """,
     )
@@ -749,7 +826,7 @@ interface SerialDao {
     @Query(
         """
         SELECT * FROM gateway_db
-        WHERE phone = :phone AND phone IS NOT NULL AND phone != ''
+        WHERE phone = :phone AND phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND registrationFieldsComplete = 1
         ORDER BY id DESC
         """,
@@ -765,7 +842,7 @@ interface SerialDao {
         SELECT gateway_db.* FROM gateway_db
         INNER JOIN serial_groups ON gateway_db.groupId = serial_groups.id
         WHERE gateway_db.phone = :phone
-          AND gateway_db.phone IS NOT NULL AND gateway_db.phone != ''
+          AND gateway_db.phone IS NOT NULL AND TRIM(gateway_db.phone) != '' AND TRIM(gateway_db.phone) != '0'
           AND gateway_db.registrationFieldsComplete = 1
           AND serial_groups.imageVerificationRequired = 1
           AND NOT EXISTS (
@@ -787,7 +864,7 @@ interface SerialDao {
         """
         SELECT substr(date, 1, 10) AS day, COUNT(*) AS count
         FROM gateway_db
-        WHERE phone IS NOT NULL AND phone != ''
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
           AND date IS NOT NULL AND length(date) >= 10
           AND (:fromDate = '' OR substr(date, 1, 10) >= :fromDate)
           AND (:toDate = '' OR substr(date, 1, 10) <= :toDate)
@@ -822,4 +899,11 @@ data class PhoneSerialDateRow(
 data class DayCountRow(
     val day: String,
     val count: Int,
+)
+
+/** Aggregated inventory counts for one serial group. */
+data class GroupIdCountRow(
+    val groupId: Long,
+    val total: Int,
+    val used: Int,
 )

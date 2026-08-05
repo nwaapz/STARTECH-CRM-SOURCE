@@ -149,7 +149,9 @@ class SerialPhotoVerificationService private constructor(
                 reply = appContext.getString(R.string.bot_photo_verify_pick_first),
             )
         }
-        val serial = session.pendingSerial?.takeIf { it.isNotBlank() }
+        val serial = SerialNormalizer.normalizeSerial(
+            session.pendingSerial?.takeIf { it.isNotBlank() }.orEmpty(),
+        ).takeIf { it.isNotEmpty() }
             ?: return@withContext PhotoSaveResult(
                 reply = appContext.getString(R.string.bot_photo_verify_pick_first),
             )

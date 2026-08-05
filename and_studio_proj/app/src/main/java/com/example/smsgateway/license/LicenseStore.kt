@@ -3,6 +3,9 @@ package com.example.smsgateway.license
 import android.content.Context
 import android.os.SystemClock
 import android.provider.Settings
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Persists customer license attestation state.
@@ -13,6 +16,10 @@ class LicenseStore private constructor(context: Context) {
     private val appContext = context.applicationContext
     private val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
+    /** Bumps whenever license prefs change so Compose can refresh without tab switches. */
+    private val _revision = MutableStateFlow(0L)
+    val revision: StateFlow<Long> = _revision.asStateFlow()
+
     fun getState(): LicenseState {
         recomputeState()
         val raw = prefs.getString(KEY_STATE, LicenseState.NEVER_ACTIVATED.name)
@@ -21,7 +28,14 @@ class LicenseStore private constructor(context: Context) {
     }
 
     fun setState(state: LicenseState) {
+        val previous = prefs.getString(KEY_STATE, LicenseState.NEVER_ACTIVATED.name)
+        if (previous == state.name) return
         prefs.edit().putString(KEY_STATE, state.name).apply()
+        notifyChanged()
+    }
+
+    private fun notifyChanged() {
+        _revision.value = _revision.value + 1
     }
 
     fun hasEverActivated(): Boolean = prefs.getBoolean(KEY_HAS_ACTIVATED, false)
@@ -58,6 +72,7 @@ class LicenseStore private constructor(context: Context) {
             .putLong(KEY_LAST_CHECK_ATTEMPT_ELAPSED, SystemClock.elapsedRealtime())
             .putLong(KEY_LAST_CHECK_ATTEMPT_WALL, System.currentTimeMillis())
             .apply()
+        notifyChanged()
     }
 
     fun clearPendingNonce() {
@@ -65,6 +80,7 @@ class LicenseStore private constructor(context: Context) {
             .remove(KEY_PENDING_NONCE)
             .remove(KEY_PENDING_NONCE_ELAPSED)
             .apply()
+        notifyChanged()
     }
 
     fun getLastCheckAttemptElapsedMs(): Long =
@@ -100,6 +116,7 @@ class LicenseStore private constructor(context: Context) {
             .remove(KEY_PENDING_NONCE_ELAPSED)
             .remove(KEY_DENY_REASON)
             .apply()
+        notifyChanged()
     }
 
     fun markDeny(reason: String) {
@@ -109,17 +126,18 @@ class LicenseStore private constructor(context: Context) {
             .remove(KEY_PENDING_NONCE)
             .remove(KEY_PENDING_NONCE_ELAPSED)
             .apply()
+        notifyChanged()
     }
 
     fun getDenyReason(): String? = prefs.getString(KEY_DENY_REASON, null)
 
     fun markGrace() {
         if (!hasEverActivated()) return
-        prefs.edit().putString(KEY_STATE, LicenseState.GRACE.name).apply()
+        setState(LicenseState.GRACE)
     }
 
     fun markLocked() {
-        prefs.edit().putString(KEY_STATE, LicenseState.LOCKED.name).apply()
+        setState(LicenseState.LOCKED)
     }
 
     fun deviceId(): String {

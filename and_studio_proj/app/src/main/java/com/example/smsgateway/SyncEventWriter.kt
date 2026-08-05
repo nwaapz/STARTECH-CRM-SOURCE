@@ -1,5 +1,7 @@
 package com.example.smsgateway
 
+import android.content.Context
+import com.example.smsgateway.cloud.CloudSyncScheduler
 import com.example.smsgateway.data.GatewayDatabase
 import com.example.smsgateway.data.SerialEntity
 import com.example.smsgateway.data.SerialGroupEntity
@@ -7,13 +9,18 @@ import com.example.smsgateway.data.SyncEventEntity
 import com.example.smsgateway.data.SyncOutboxEntity
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
 
 class SyncEventWriter(
     private val database: GatewayDatabase,
 ) {
+    private var appContext: Context? = null
+
+    fun attachContext(context: Context) {
+        appContext = context.applicationContext
+    }
+
     suspend fun recordRegistered(
         serial: String,
         phone: String,
@@ -43,12 +50,13 @@ class SyncEventWriter(
         city: String?,
         km: Int?,
     ) {
+        val normalizedSerial = SerialNormalizer.normalizeSerial(serial)
         val now = System.currentTimeMillis()
-        database.serialDao().touchSyncUpdatedMs(serial, now)
-        val row = database.serialDao().findBySerial(serial)
+        database.serialDao().touchSyncUpdatedMs(normalizedSerial, now)
+        val row = database.serialDao().findBySerial(normalizedSerial)
         val group = row?.groupId?.let { database.serialGroupDao().findById(it) }
         val payload = JSONObject().apply {
-            put("serial", serial)
+            put("serial", normalizedSerial)
             put("phone", phone)
             put("dateJalali", date)
             if (city != null) put("city", city)
@@ -59,19 +67,29 @@ class SyncEventWriter(
             if (!group?.category.isNullOrBlank()) put("category", group!!.category)
             put("syncUpdatedMs", now)
         }
-        insertOutbox(TYPE_SERIAL_UPSERT, payload, now)
+        insertOutbox(
+            TYPE_SERIAL_UPSERT,
+            payload,
+            now,
+            coalesceKey = coalesceSerialKey(normalizedSerial),
+        )
+        requestCloudSyncSoon()
     }
 
     /**
      * After local inventory create/extend: push group metadata + unused serials in batches.
+     * Not used for CSV import.
      */
     suspend fun enqueueInventoryForGroup(groupId: Long, serialsFilter: List<String>? = null) =
         withContext(Dispatchers.IO) {
             val group = database.serialGroupDao().findById(groupId) ?: return@withContext
             enqueueGroupUpsert(group)
             if (serialsFilter != null) {
-                val serials = serialsFilter.mapNotNull { database.serialDao().findBySerial(it) }
+                val serials = serialsFilter.mapNotNull {
+                    database.serialDao().findBySerial(SerialNormalizer.normalizeSerial(it))
+                }
                 enqueueSerialBatches(serials, group)
+                requestCloudSyncSoon()
                 return@withContext
             }
             var offset = 0
@@ -86,6 +104,7 @@ class SyncEventWriter(
                 offset += page.size
                 if (page.size < SERIAL_BATCH_SIZE) break
             }
+            requestCloudSyncSoon()
         }
 
     suspend fun enqueueGroupUpsert(group: SerialGroupEntity) = withContext(Dispatchers.IO) {
@@ -107,7 +126,13 @@ class SyncEventWriter(
             put("createdAt", group.createdAt)
             put("syncUpdatedMs", now)
         }
-        insertOutbox(TYPE_GROUP_UPSERT, payload, now)
+        insertOutbox(
+            TYPE_GROUP_UPSERT,
+            payload,
+            now,
+            coalesceKey = "group:${group.id}:$TYPE_GROUP_UPSERT",
+        )
+        requestCloudSyncSoon()
     }
 
     suspend fun enqueueGroupDelete(group: SerialGroupEntity) = withContext(Dispatchers.IO) {
@@ -117,7 +142,12 @@ class SyncEventWriter(
             if (group.syncOriginGroupId != null) put("syncOriginGroupId", group.syncOriginGroupId)
             put("syncUpdatedMs", now)
         }
-        insertOutbox(TYPE_GROUP_DELETE, payload, now)
+        insertOutbox(
+            TYPE_GROUP_DELETE,
+            payload,
+            now,
+            coalesceKey = "group:${group.id}:$TYPE_GROUP_DELETE",
+        )
     }
 
     private suspend fun enqueueSerialBatches(
@@ -126,43 +156,49 @@ class SyncEventWriter(
     ) {
         if (serials.isEmpty()) return
         val now = System.currentTimeMillis()
-        serials.chunked(SERIAL_BATCH_SIZE).forEach { chunk ->
-            val arr = JSONArray()
-            for (s in chunk) {
-                val syncMs = if (s.syncUpdatedMs > 0) s.syncUpdatedMs else now
-                arr.put(
-                    JSONObject().apply {
-                        put("serial", s.serial)
-                        put("phone", s.phone)
-                        put("city", s.city)
-                        put("km", s.km)
-                        put("dateJalali", s.date)
-                        put("regSource", s.registrationSource)
-                        put("localGroupId", group.id)
-                        if (group.syncOriginGroupId != null) {
-                            put("syncOriginGroupId", group.syncOriginGroupId)
-                        }
-                        put("category", group.category)
-                        put("syncUpdatedMs", syncMs)
-                    },
-                )
+        // One pending entry per serial (coalesced) instead of opaque batches — simplifies conflicts.
+        for (s in serials) {
+            val syncMs = if (s.syncUpdatedMs > 0) s.syncUpdatedMs else now
+            val payload = JSONObject().apply {
+                put("serial", s.serial)
+                put("phone", s.phone)
+                put("city", s.city)
+                put("km", s.km)
+                put("dateJalali", s.date)
+                put("regSource", s.registrationSource)
+                put("localGroupId", group.id)
+                if (group.syncOriginGroupId != null) {
+                    put("syncOriginGroupId", group.syncOriginGroupId)
+                }
+                put("category", group.category)
+                put("syncUpdatedMs", syncMs)
             }
-            val payload = JSONObject()
-                .put("serials", arr)
-                .put("localGroupId", group.id)
-                .put("category", group.category)
-                .put("syncUpdatedMs", now)
-            insertOutbox(TYPE_SERIAL_BATCH_UPSERT, payload, now)
+            insertOutbox(
+                TYPE_SERIAL_UPSERT,
+                payload,
+                now,
+                coalesceKey = coalesceSerialKey(s.serial),
+            )
         }
     }
 
-    private suspend fun insertOutbox(type: String, payload: JSONObject, createdAt: Long) {
-        database.syncOutboxDao().insert(
+    private suspend fun insertOutbox(
+        type: String,
+        payload: JSONObject,
+        createdAt: Long,
+        coalesceKey: String?,
+    ) {
+        val dao = database.syncOutboxDao()
+        if (!coalesceKey.isNullOrBlank()) {
+            dao.deletePendingByCoalesceKey(coalesceKey)
+        }
+        dao.insert(
             SyncOutboxEntity(
                 eventId = UUID.randomUUID().toString(),
                 type = type,
                 payloadJson = payload.toString(),
                 createdAt = createdAt,
+                coalesceKey = coalesceKey,
             ),
         )
     }
@@ -203,12 +239,12 @@ class SyncEventWriter(
             put("message", "افزودن $inserted سریال (تکراری: $skipped)")
         }
         insertEvent(TYPE_SERIALS_ADDED, payload.toString())
-        enqueueDashboardActivity(TYPE_SERIALS_ADDED, payload)
+        // Dashboard activity is LAN-only; not pushed to cloud buffer.
     }
 
     /**
      * Generic dashboard / recent-events entry (photo review, bot connect, etc.).
-     * Written locally for LAN CRM and pushed to remote MySQL activity log.
+     * Written locally for LAN CRM only (not cloud-buffered).
      */
     suspend fun recordDashboardEvent(
         type: String,
@@ -229,21 +265,15 @@ class SyncEventWriter(
             }
         }
         insertEvent(type, payload.toString())
-        enqueueDashboardActivity(type, payload)
-    }
-
-    private suspend fun enqueueDashboardActivity(type: String, payload: JSONObject) {
-        val now = System.currentTimeMillis()
-        val body = JSONObject()
-            .put("type", type)
-            .put("payload", payload)
-            .put("at", payload.optLong("at", now))
-        insertOutbox("dashboard_activity", body, now)
     }
 
     private suspend fun pruneOldEvents() {
         val cutoff = System.currentTimeMillis() - RETENTION_MS
         database.syncEventDao().deleteOlderThan(cutoff)
+    }
+
+    private fun requestCloudSyncSoon() {
+        appContext?.let { CloudSyncScheduler.getInstance(it).pushSoon() }
     }
 
     companion object {
@@ -263,8 +293,17 @@ class SyncEventWriter(
         private const val SERIAL_BATCH_SIZE = 200
         private const val RETENTION_MS = 7L * 24 * 60 * 60 * 1000
 
+        fun coalesceSerialKey(serial: String): String =
+            "serial:" + serial.trim().uppercase()
+
         @Volatile
         private var instance: SyncEventWriter? = null
+
+        fun getInstance(context: Context): SyncEventWriter {
+            val writer = getInstance(GatewayDatabase.getInstance(context))
+            writer.attachContext(context)
+            return writer
+        }
 
         fun getInstance(database: GatewayDatabase): SyncEventWriter {
             return instance ?: synchronized(this) {

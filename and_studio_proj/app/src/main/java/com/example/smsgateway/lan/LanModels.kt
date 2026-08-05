@@ -87,6 +87,8 @@ data class ComplexBatchRequestBody(
     val count: Int,
     val letterCount: Int = 3,
     val digitCount: Int = 7,
+    /** Fixed body pattern (C=letter, D=digit). Omit for random letter positions. */
+    val pattern: String? = null,
     /** Optional fixed prefix for every serial (empty / omitted = no prefix). */
     val prefix: String? = null,
     val city: String? = null,
@@ -118,6 +120,9 @@ data class BatchResponseBody(
     val skipped: Int,
     val total: Int,
     val groupId: Long? = null,
+    val usedInserted: Int = 0,
+    val unusedInserted: Int = 0,
+    val invalidCount: Int = 0,
 )
 
 @Serializable
@@ -1062,6 +1067,21 @@ data class CloudSyncStatusResponse(
     val pendingOutbox: Int = 0,
     val lastPushMs: Long = 0,
     val lastPullMs: Long = 0,
+    val running: Boolean = false,
+    /** idle | fetch | push | apply | conflicts | done | error */
+    val phase: String = "idle",
+    val percent: Int = 0,
+    val detail: String? = null,
+    val pushDone: Int = 0,
+    val pushTotal: Int = 0,
+    val pullPage: Int = 0,
+    val pullPagesEstimate: Int = 0,
+    val applyRowsDone: Int = 0,
+    val applyRowsTotal: Int = 0,
+    val repairGroupsDone: Int = 0,
+    val repairGroupsTotal: Int = 0,
+    val conflictCount: Int = 0,
+    val pendingRemote: Int = 0,
 )
 
 @Serializable

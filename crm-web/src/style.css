@@ -1046,6 +1046,84 @@ button.danger {
   word-break: break-all;
 }
 
+.serial-warning-panel {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  background: #fff8e1;
+  border: 1px solid #ffcc80;
+  border-radius: 8px;
+}
+
+.serial-warning-title {
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+  color: #e65100;
+}
+
+.typo-safe-preset-card {
+  margin: 0 0 1rem;
+  padding: 0.85rem 1rem;
+  background: #e8f5e9;
+  border: 1px solid #a5d6a7;
+  border-radius: 8px;
+}
+
+.typo-safe-preset-title {
+  margin: 0 0 0.5rem;
+  font-weight: 700;
+  color: #2e7d32;
+}
+
+.pattern-editor {
+  margin: 0.25rem 0 0.5rem;
+  padding: 0.75rem 1rem;
+  background: #f8fafb;
+  border: 1px dashed #cfd8dc;
+  border-radius: 8px;
+}
+
+.pattern-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.5rem 0 0.75rem;
+}
+
+.pattern-slots {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.pattern-slot {
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0 0.35rem;
+  border-radius: 6px;
+  border: 1px solid #b0bec5;
+  background: #fff;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pattern-slot.letter {
+  color: #1565c0;
+  border-color: #90caf9;
+  background: #e3f2fd;
+}
+
+.pattern-slot.digit {
+  color: #2e7d32;
+  border-color: #a5d6a7;
+  background: #e8f5e9;
+}
+
+.pattern-slot:hover {
+  filter: brightness(0.97);
+}
+
 .source-filters {
   margin: 0.75rem 0 1rem;
 }

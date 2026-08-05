@@ -30,7 +30,9 @@ data class SerialEntity(
     val syncUpdatedMs: Long = 0,
 ) {
     fun needsCompletion(): Boolean {
-        return !phone.isNullOrBlank() && !registrationFieldsComplete
+        // Sentinel "0" is unused inventory (same as remote CRM), not a partial registration.
+        val registered = !phone.isNullOrBlank() && phone.trim() != "0"
+        return registered && !registrationFieldsComplete
     }
 
     fun completionReminderSent(): Boolean = completionReminderSentAt != null

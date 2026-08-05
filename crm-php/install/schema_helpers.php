@@ -105,6 +105,22 @@ function payamesh_ensure_unified_serial_columns(mysqli $conn, bool $alsoNewSeria
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
     );
     $conn->query(
+        "CREATE TABLE IF NOT EXISTS crm_sync_buffer (
+            id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+            entry_id VARCHAR(64) NOT NULL,
+            serial VARCHAR(64) NULL,
+            coalesce_key VARCHAR(128) NOT NULL,
+            event_type VARCHAR(64) NOT NULL,
+            payload_json MEDIUMTEXT NOT NULL,
+            created_at BIGINT NOT NULL,
+            status VARCHAR(16) NOT NULL DEFAULT 'pending',
+            UNIQUE KEY uq_crm_sync_buffer_entry (entry_id),
+            KEY idx_crm_sync_buffer_status (status, created_at),
+            KEY idx_crm_sync_buffer_coalesce (status, coalesce_key),
+            KEY idx_crm_sync_buffer_serial (status, serial)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4"
+    );
+    $conn->query(
         "CREATE TABLE IF NOT EXISTS serial_registration_errors (
             id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
             phone VARCHAR(32) NOT NULL,

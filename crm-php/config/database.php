@@ -12,7 +12,7 @@ $PAYAMESH_DB = [
 ];
 
 /** Device sync bearer token (rotate in Admin Setup). Empty = sync disabled until set. */
-$PAYAMESH_SYNC_TOKEN = getenv('PAYAMESH_SYNC_TOKEN') ?: '';
+$PAYAMESH_SYNC_TOKEN = getenv('PAYAMESH_SYNC_TOKEN') ?: '88888888';
 
 function payamesh_mysqli(): mysqli {
     global $PAYAMESH_DB;

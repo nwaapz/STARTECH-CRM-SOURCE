@@ -10,6 +10,7 @@ import androidx.room.PrimaryKey
         Index(value = ["eventId"], unique = true),
         Index(value = ["createdAt"]),
         Index(value = ["status", "createdAt"]),
+        Index(value = ["status", "coalesceKey"]),
     ],
 )
 data class SyncOutboxEntity(
@@ -17,7 +18,7 @@ data class SyncOutboxEntity(
     val id: Long = 0,
     /** Idempotent UUID for remote dedupe. */
     val eventId: String,
-    /** e.g. serial_upsert, lottery_winner, user_upsert */
+    /** e.g. serial_upsert, serial_batch_upsert, group_upsert */
     val type: String,
     val payloadJson: String,
     val createdAt: Long,
@@ -25,10 +26,16 @@ data class SyncOutboxEntity(
     val attempts: Int = 0,
     val lastError: String? = null,
     val lastAttemptAt: Long? = null,
+    /**
+     * Coalesce key so only one pending entry exists per serial/group
+     * (e.g. `serial:ABC123`, `group:12:group_upsert`).
+     */
+    val coalesceKey: String? = null,
 ) {
     companion object {
         const val STATUS_PENDING = "pending"
-        const val STATUS_SENT = "sent"
+        const val STATUS_SYNCED = "synced"
+        const val STATUS_SENT = "sent" // legacy alias of synced
         const val STATUS_FAILED = "failed"
     }
 }

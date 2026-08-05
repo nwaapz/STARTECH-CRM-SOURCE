@@ -6,6 +6,7 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.smsgateway.PhoneUtils
 import com.example.smsgateway.SerialRegistrationErrorReason
 
 @Database(
@@ -44,7 +45,7 @@ import com.example.smsgateway.SerialRegistrationErrorReason
         LotterySuspendedPhoneEntity::class,
         SyncOutboxEntity::class,
     ],
-    version = 39,
+    version = 43,
     exportSchema = false,
 )
 abstract class GatewayDatabase : RoomDatabase() {
@@ -109,7 +110,7 @@ abstract class GatewayDatabase : RoomDatabase() {
     abstract fun syncOutboxDao(): SyncOutboxDao
 
     companion object {
-        private const val DB_NAME = "gateway_db.sqlite"
+        const val DB_NAME = "gateway_db.sqlite"
 
         private val MIGRATION_1_2 = object : Migration(1, 2) {
             override fun migrate(db: SupportSQLiteDatabase) {
@@ -1019,6 +1020,99 @@ abstract class GatewayDatabase : RoomDatabase() {
             }
         }
 
+        /** Remote CRM treats phone sentinel "0" as unused inventory — normalize local rows. */
+        private val MIGRATION_39_40 = object : Migration(39, 40) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    UPDATE gateway_db
+                    SET phone = NULL,
+                        registrationFieldsComplete = 1
+                    WHERE phone IS NOT NULL
+                      AND TRIM(phone) = '0'
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        /**
+         * CSV/phpMyAdmin dumps often write the literal text NULL for empty phones.
+         * Those were incorrectly counted as registered — clear them.
+         */
+        private val MIGRATION_40_41 = object : Migration(40, 41) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    UPDATE gateway_db
+                    SET phone = NULL,
+                        date = NULL,
+                        registrationFieldsComplete = 1
+                    WHERE phone IS NOT NULL
+                      AND (
+                        UPPER(TRIM(phone)) = 'NULL'
+                        OR UPPER(TRIM(phone)) = 'NIL'
+                        OR TRIM(phone) = '\N'
+                        OR UPPER(TRIM(phone)) = 'N/A'
+                      )
+                    """.trimIndent(),
+                )
+                db.execSQL(
+                    """
+                    UPDATE gateway_db
+                    SET city = NULL
+                    WHERE city IS NOT NULL
+                      AND (
+                        UPPER(TRIM(city)) = 'NULL'
+                        OR UPPER(TRIM(city)) = 'NIL'
+                        OR TRIM(city) = '\N'
+                      )
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        /**
+         * Anything that is not a digit-bearing phone-like value is unused inventory.
+         * Clears leftover CSV junk (letters-only, too-short, dashes, etc.).
+         */
+        private val MIGRATION_41_42 = object : Migration(41, 42) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    UPDATE gateway_db
+                    SET phone = NULL,
+                        date = NULL,
+                        registrationFieldsComplete = 1
+                    WHERE phone IS NOT NULL
+                      AND (
+                        TRIM(phone) = ''
+                        OR TRIM(phone) = '0'
+                        OR TRIM(phone) = '-'
+                        OR TRIM(phone) = '.'
+                        OR UPPER(TRIM(phone)) IN ('NULL', 'NIL', 'N/A')
+                        OR TRIM(phone) = '\N'
+                        OR phone GLOB '*[A-Za-z]*'
+                        OR length(
+                          replace(replace(replace(replace(replace(replace(
+                            TRIM(phone), '+', ''), ' ', ''), '-', ''), '(', ''), ')', ''), '.', '')
+                        ) < 10
+                      )
+                    """.trimIndent(),
+                )
+            }
+        }
+
+        /** Dual-buffer sync: coalesce key on outbox for one-pending-per-serial/group. */
+        private val MIGRATION_42_43 = object : Migration(42, 43) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE sync_outbox ADD COLUMN coalesceKey TEXT")
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS index_sync_outbox_status_coalesceKey " +
+                        "ON sync_outbox(status, coalesceKey)",
+                )
+            }
+        }
+
         private val MIGRATION_37_38 = object : Migration(37, 38) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -1214,7 +1308,7 @@ abstract class GatewayDatabase : RoomDatabase() {
             val cursor = db.query(
                 """
                 SELECT phone FROM gateway_db
-                WHERE UPPER(serial) = UPPER(?)
+                WHERE serial = ?
                 LIMIT 1
                 """.trimIndent(),
                 arrayOf(serial),
@@ -1224,7 +1318,7 @@ abstract class GatewayDatabase : RoomDatabase() {
                     return SerialRegistrationErrorReason.NOT_FOUND
                 }
                 val phone = it.getString(0)
-                return if (!phone.isNullOrBlank()) {
+                return if (PhoneUtils.isRegisteredPhone(phone)) {
                     SerialRegistrationErrorReason.ALREADY_USED
                 } else {
                     SerialRegistrationErrorReason.NOT_FOUND
@@ -1234,6 +1328,13 @@ abstract class GatewayDatabase : RoomDatabase() {
 
         @Volatile
         private var instance: GatewayDatabase? = null
+
+        fun closeInstance() {
+            synchronized(this) {
+                instance?.close()
+                instance = null
+            }
+        }
 
         fun getInstance(context: Context): GatewayDatabase {
             return instance ?: synchronized(this) {
@@ -1281,6 +1382,10 @@ abstract class GatewayDatabase : RoomDatabase() {
                         MIGRATION_36_37,
                         MIGRATION_37_38,
                         MIGRATION_38_39,
+                        MIGRATION_39_40,
+                        MIGRATION_40_41,
+                        MIGRATION_41_42,
+                        MIGRATION_42_43,
                     )
                     .build()
                     .also { instance = it }

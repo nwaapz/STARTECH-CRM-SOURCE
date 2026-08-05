@@ -29,6 +29,18 @@ class SerialGenerator(
         val skipped: Int,
         val total: Int,
         val groupId: Long? = null,
+        val usedInserted: Int = 0,
+        val unusedInserted: Int = 0,
+        val invalidCount: Int = 0,
+    )
+
+    data class ImportStateMetaRequest(
+        val description: String? = null,
+        val score: Int = 1,
+        val category: String = SerialGroupCategory.DEFAULT,
+        val warrantyMonths: Int? = null,
+        val warrantyKm: Int? = null,
+        val imageVerificationRequired: Boolean = false,
     )
 
     data class ComplexGenerateRequest(
@@ -37,6 +49,11 @@ class SerialGenerator(
         val letterCount: Int,
         /** Exact number of digit characters in each serial. */
         val digitCount: Int,
+        /**
+         * Optional fixed body pattern using C (letter) and D (digit), e.g. "CDDDDDDD".
+         * When set, character positions are fixed; when null, letter slots are shuffled randomly.
+         */
+        val pattern: String? = null,
         /**
          * Optional fixed prefix prepended to every generated serial (e.g. "G").
          * Empty means no prefix — only the random letter/digit body.
@@ -181,11 +198,12 @@ class SerialGenerator(
             SerialGroupGenerationMode.COMPLEX -> {
                 val userPrefix = group.prefix
                     .takeIf { it.isNotEmpty() && !it.equals(COMPLEX_PREFIX, ignoreCase = true) }
-                if (userPrefix != null) {
+                val base = if (userPrefix != null) {
                     "تصادفی پیشوند $userPrefix • ${group.padWidth} کاراکتر × ${group.endNumber}"
                 } else {
                     "تصادفی ${group.padWidth} کاراکتر × ${group.endNumber}"
                 }
+                base
             }
             SerialGroupGenerationMode.IMPORT ->
                 "وارداتی × ${group.endNumber}"
@@ -320,7 +338,7 @@ class SerialGenerator(
             skipped = skipped,
             total = normalized.size,
         )
-        syncWriter.enqueueInventoryForGroup(groupId)
+        // CSV import is intentionally not buffered for cloud sync.
 
         GenerateResult(
             inserted = inserted,
@@ -330,7 +348,138 @@ class SerialGenerator(
         )
     }
 
-    fun validateComplex(request: ComplexGenerateRequest): String {
+    /**
+     * Imports named-header CSV rows (serial + optional phone/date/city/km) as one import group.
+     * Used = registered phone; unused = blank/`0` phone.
+     */
+    fun validateImportMetaOnly(request: ImportStateMetaRequest) {
+        if (request.score < 1) {
+            throw ValidationException("Score must be at least 1.")
+        }
+        SerialGroupCategory.requireValid(request.category)
+        SerialGroupWarranty.requireValid(request.warrantyMonths, request.warrantyKm)
+    }
+
+    suspend fun generateImportWithState(
+        request: ImportStateMetaRequest,
+        parseResult: SerialStateCsv.ParseResult,
+        onProgress: ((Float) -> Unit)? = null,
+    ): GenerateResult = withContext(Dispatchers.IO) {
+        if (request.score < 1) {
+            throw ValidationException("Score must be at least 1.")
+        }
+        val category = SerialGroupCategory.requireValid(request.category)
+        val (warrantyMonths, warrantyKm) = SerialGroupWarranty.requireValid(
+            request.warrantyMonths,
+            request.warrantyKm,
+        )
+        val description = request.description?.trim()?.takeIf { it.isNotEmpty() }
+        val rowsBySerial = parseResult.rowsBySerial
+        if (rowsBySerial.isEmpty()) {
+            throw ValidationException("No valid serials found in the CSV.")
+        }
+
+        val dao = database.serialDao()
+        val groupDao = database.serialGroupDao()
+        val uniqueList = rowsBySerial.keys.toList()
+
+        val existing = mutableSetOf<String>()
+        uniqueList.chunked(CHUNK_SIZE).forEach { chunk ->
+            existing.addAll(dao.findExistingUpperSerials(chunk))
+        }
+
+        val toInsertKeys = uniqueList.filter { it !in existing }
+        val skippedExisting = uniqueList.size - toInsertKeys.size
+        val skipped = parseResult.stats.skippedInFileDuplicates + skippedExisting
+
+        if (toInsertKeys.isEmpty()) {
+            throw ValidationException(
+                "No new serials to import — all ${uniqueList.size} were duplicates.",
+            )
+        }
+
+        val now = System.currentTimeMillis()
+        val groupId = groupDao.insert(
+            SerialGroupEntity(
+                prefix = IMPORT_PREFIX,
+                startNumber = 0,
+                endNumber = toInsertKeys.size,
+                padWidth = toInsertKeys.maxOf { it.length },
+                description = description,
+                score = request.score,
+                category = category,
+                generationMode = SerialGroupGenerationMode.IMPORT,
+                warrantyMonths = warrantyMonths,
+                warrantyKm = warrantyKm,
+                imageVerificationRequired = request.imageVerificationRequired,
+                createdAt = now,
+                syncUpdatedMs = now,
+            ),
+        )
+
+        var inserted = 0
+        var usedInserted = 0
+        var unusedInserted = 0
+        val totalChunks = (toInsertKeys.size + CHUNK_SIZE - 1) / CHUNK_SIZE
+        toInsertKeys.chunked(CHUNK_SIZE).forEachIndexed { chunkIndex, chunk ->
+            val entities = chunk.map { key ->
+                val row = rowsBySerial.getValue(key)
+                val phone = row.phone
+                val registered = PhoneUtils.isRegisteredPhone(phone)
+                val fieldsComplete = if (!registered) {
+                    true
+                } else {
+                    RegistrationFieldRules.fieldsComplete(row.city, row.km, category)
+                }
+                if (registered) usedInserted++ else unusedInserted++
+                SerialEntity(
+                    serial = row.serial,
+                    phone = phone,
+                    date = row.date,
+                    city = row.city,
+                    km = row.km,
+                    registrationFieldsComplete = fieldsComplete,
+                    groupId = groupId,
+                    syncUpdatedMs = now,
+                )
+            }
+            inserted += dao.insertAll(entities).count { it != -1L }
+            onProgress?.invoke(((chunkIndex + 1).toFloat() / totalChunks).coerceIn(0f, 1f))
+        }
+
+        if (inserted <= 0) {
+            groupDao.deleteById(groupId)
+            return@withContext GenerateResult(
+                inserted = 0,
+                skipped = skipped,
+                total = uniqueList.size + parseResult.stats.invalidCount,
+                groupId = null,
+                invalidCount = parseResult.stats.invalidCount,
+            )
+        }
+
+        groupDao.updateRange(groupId, 0, inserted, now)
+
+        val syncWriter = SyncEventWriter.getInstance(database)
+        syncWriter.recordSerialsAdded(
+            inserted = inserted,
+            skipped = skipped,
+            total = uniqueList.size,
+        )
+        // CSV import is intentionally not buffered for cloud sync.
+
+        GenerateResult(
+            inserted = inserted,
+            skipped = skipped,
+            total = uniqueList.size + parseResult.stats.invalidCount,
+            groupId = groupId,
+            usedInserted = usedInserted,
+            unusedInserted = unusedInserted,
+            invalidCount = parseResult.stats.invalidCount,
+        )
+    }
+
+    fun validateComplex(request: ComplexGenerateRequest): Pair<String, String?> {
         if (request.count < 1) {
             throw ValidationException("Count must be at least 1.")
         }
@@ -365,20 +514,40 @@ class SerialGenerator(
         }
         SerialGroupCategory.requireValid(request.category)
         SerialGroupWarranty.requireValid(request.warrantyMonths, request.warrantyKm)
-        val maxDistinct = estimateMaxDistinctComposition(request.letterCount, request.digitCount)
+        val pattern = normalizeComplexPattern(request.pattern)
+        if (pattern != null) {
+            if (pattern.length != bodyLength) {
+                throw ValidationException(
+                    "Pattern length (${pattern.length}) must match body length ($bodyLength).",
+                )
+            }
+            val patternLetters = pattern.count { it == 'C' }
+            val patternDigits = pattern.count { it == 'D' }
+            if (patternLetters != request.letterCount || patternDigits != request.digitCount) {
+                throw ValidationException(
+                    "Pattern must contain exactly ${request.letterCount} letters (C) " +
+                        "and ${request.digitCount} digits (D).",
+                )
+            }
+        }
+        val maxDistinct = if (pattern != null) {
+            estimateMaxDistinctFixed(request.letterCount, request.digitCount)
+        } else {
+            estimateMaxDistinctComposition(request.letterCount, request.digitCount)
+        }
         if (request.count > maxDistinct) {
             throw ValidationException(
                 "Requested count exceeds maximum unique serials for this composition ($maxDistinct).",
             )
         }
-        return prefix
+        return prefix to pattern
     }
 
     suspend fun generateComplex(
         request: ComplexGenerateRequest,
         onProgress: (processed: Int, total: Int) -> Unit = { _, _ -> },
     ): GenerateResult = withContext(Dispatchers.IO) {
-        val prefix = validateComplex(request)
+        val (prefix, pattern) = validateComplex(request)
         val dao = database.serialDao()
         val groupDao = database.serialGroupDao()
         val length = request.length
@@ -440,7 +609,11 @@ class SerialGenerator(
             var guard = 0
             while (candidates.size < batchSize && guard < batchSize * 20) {
                 candidates.add(
-                    randomComplexSerial(prefix, request.letterCount, request.digitCount),
+                    if (pattern != null) {
+                        fixedComplexSerial(prefix, pattern)
+                    } else {
+                        randomComplexSerial(prefix, request.letterCount, request.digitCount)
+                    },
                 )
                 guard++
                 attempts++
@@ -839,10 +1012,13 @@ class SerialGenerator(
 
     suspend fun listGroups(): List<GroupSummary> = withContext(Dispatchers.IO) {
         val groupDao = database.serialGroupDao()
+        val countsByGroupId = database.serialDao().countTotalsByGroup()
+            .associateBy { it.groupId }
         groupDao.listAll().map { group ->
-            val total = groupDao.countByGroupId(group.id)
-            val used = groupDao.countUsedByGroupId(group.id)
-            val unused = total - used
+            val counts = countsByGroupId[group.id]
+            val total = counts?.total ?: 0
+            val used = counts?.used ?: 0
+            val unused = (total - used).coerceAtLeast(0)
             val salePercentage = if (total > 0) {
                 kotlin.math.round(used * 1000.0 / total) / 10.0
             } else {
@@ -893,6 +1069,32 @@ class SerialGenerator(
         return serial
     }
 
+    fun normalizeComplexPattern(raw: String?): String? {
+        val pattern = raw?.trim()?.uppercase()?.takeIf { it.isNotEmpty() } ?: return null
+        if (!COMPLEX_PATTERN_REGEX.matches(pattern)) {
+            throw ValidationException("Pattern may only contain C (letter) and D (digit).")
+        }
+        return pattern
+    }
+
+    /**
+     * Builds a serial with an optional fixed [prefix] and a fixed [pattern] body (C=letter, D=digit).
+     */
+    private fun fixedComplexSerial(prefix: String, pattern: String): String {
+        val random = java.security.SecureRandom()
+        val letters = COMPLEX_LETTERS.toCharArray()
+        val digits = COMPLEX_DIGITS.toCharArray()
+        val body = CharArray(pattern.length)
+        for (index in pattern.indices) {
+            body[index] = when (pattern[index]) {
+                'C' -> letters[random.nextInt(letters.size)]
+                'D' -> digits[random.nextInt(digits.size)]
+                else -> throw IllegalStateException("Invalid pattern slot: ${pattern[index]}")
+            }
+        }
+        return if (prefix.isEmpty()) String(body) else prefix + String(body)
+    }
+
     /**
      * Builds a serial with an optional fixed [prefix] followed by exactly [letterCount] letters
      * and [digitCount] digits. Letter positions in the random body are chosen randomly.
@@ -920,6 +1122,25 @@ class SerialGenerator(
             }
         }
         return if (prefix.isEmpty()) String(chars) else prefix + String(chars)
+    }
+
+    private fun estimateMaxDistinctFixed(letterCount: Int, digitCount: Int): Long {
+        val letterAlphabet = COMPLEX_LETTERS.length.toLong()
+        val digitAlphabet = COMPLEX_DIGITS.length.toLong()
+        var total = 1L
+        repeat(letterCount) {
+            if (total > LARGE_BATCH_THRESHOLD) return Long.MAX_VALUE
+            val next = total * letterAlphabet
+            if (letterAlphabet > 0 && next / letterAlphabet != total) return Long.MAX_VALUE
+            total = next
+        }
+        repeat(digitCount) {
+            if (total > LARGE_BATCH_THRESHOLD) return Long.MAX_VALUE
+            val next = total * digitAlphabet
+            if (digitAlphabet > 0 && next / digitAlphabet != total) return Long.MAX_VALUE
+            total = next
+        }
+        return total
     }
 
     private fun estimateMaxDistinctComposition(letterCount: Int, digitCount: Int): Long {
@@ -1018,6 +1239,8 @@ class SerialGenerator(
         const val CHUNK_SIZE = 5000
         /** Hard maximum serials allowed in one generate / import / extend run. */
         const val LARGE_BATCH_THRESHOLD = 500_000
+        /** Max rows for stateful CSV import (used + unused + dates). */
+        const val STATEFUL_CSV_MAX_BATCH = SerialStateCsv.MAX_ROWS
         /** UI confirmation prompt when a range job exceeds this size. */
         const val CONFIRM_BATCH_THRESHOLD = 10_000
         const val COMPLEX_PREFIX = "RND"
@@ -1031,6 +1254,7 @@ class SerialGenerator(
 
         private val PREFIX_REGEX = Regex("^[A-Za-z0-9]+$")
         private val SERIAL_REGEX = Regex("^[A-Za-z0-9]+$")
+        private val COMPLEX_PATTERN_REGEX = Regex("^[CD]+$")
 
         fun compressToRanges(numbers: List<Int>): List<Pair<Int, Int>> {
             if (numbers.isEmpty()) return emptyList()

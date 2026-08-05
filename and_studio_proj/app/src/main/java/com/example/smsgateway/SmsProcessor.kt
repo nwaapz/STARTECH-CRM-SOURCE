@@ -17,6 +17,12 @@ class SmsProcessor(private val context: Context) {
 
     fun process(sender: String, body: String, subscriptionId: Int) {
         if (sender.isBlank() || body.isBlank()) return
+        // Hard stop: never verify/reply to short codes or non-Iranian-mobile senders.
+        // (SmsReceiver also filters; this covers older builds / alternate entry points.)
+        if (!PhoneUtils.isRegisteredPhone(sender)) {
+            LanTraceLog.w(TAG, "Ignoring non-mobile SMS sender=$sender")
+            return
+        }
 
         val dedupKey = "$subscriptionId::$sender::$body"
         val now = System.currentTimeMillis()

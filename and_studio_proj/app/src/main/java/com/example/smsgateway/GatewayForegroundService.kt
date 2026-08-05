@@ -23,7 +23,7 @@ class GatewayForegroundService : Service() {
             ACTION_STOP -> {
                 LanTraceLog.i("Service", "Foreground service stop requested")
                 ClubAutoMessageScheduler.getInstance(this).stop()
-                com.example.smsgateway.cloud.CloudSyncScheduler.getInstance(this).stop()
+                com.example.smsgateway.backup.BackupScheduler.getInstance(this).stop()
                 com.example.smsgateway.license.LicenseChecker.getInstance(this).stop()
                 stopLanServer()
                 SettingsStore.getInstance(this).setServiceEnabled(false)
@@ -34,9 +34,10 @@ class GatewayForegroundService : Service() {
             else -> {
                 SettingsStore.getInstance(this).setServiceEnabled(true)
                 LanTraceLog.i("Service", "Foreground service started")
+                SyncEventWriter.getInstance(this).attachContext(this)
                 startLanServerIfEnabled()
                 ClubAutoMessageScheduler.getInstance(this).start()
-                com.example.smsgateway.cloud.CloudSyncScheduler.getInstance(this).start()
+                com.example.smsgateway.backup.BackupScheduler.getInstance(this).start()
                 com.example.smsgateway.license.LicenseChecker.getInstance(this).start()
                 startForeground(NOTIFICATION_ID, buildNotification())
                 return START_STICKY
@@ -46,7 +47,7 @@ class GatewayForegroundService : Service() {
 
     override fun onDestroy() {
         ClubAutoMessageScheduler.getInstance(this).stop()
-        com.example.smsgateway.cloud.CloudSyncScheduler.getInstance(this).stop()
+        com.example.smsgateway.backup.BackupScheduler.getInstance(this).stop()
         stopLanServer()
         super.onDestroy()
     }

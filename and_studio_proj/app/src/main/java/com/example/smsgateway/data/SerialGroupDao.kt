@@ -22,6 +22,9 @@ interface SerialGroupDao {
     @Query("SELECT * FROM serial_groups WHERE syncOriginGroupId = :remoteId LIMIT 1")
     suspend fun findBySyncOriginGroupId(remoteId: Long): SerialGroupEntity?
 
+    @Query("SELECT * FROM serial_groups WHERE syncOriginGroupId IN (:remoteIds)")
+    suspend fun findBySyncOriginGroupIds(remoteIds: List<Long>): List<SerialGroupEntity>
+
     @Query("DELETE FROM serial_groups WHERE id = :id")
     suspend fun deleteById(id: Long): Int
 
@@ -71,11 +74,8 @@ interface SerialGroupDao {
     suspend fun countByGroupId(groupId: Long): Int
 
     @Query(
-        """
-        SELECT COUNT(*) FROM gateway_db
-        WHERE groupId = :groupId
-          AND phone IS NOT NULL AND phone != ''
-        """,
+        "SELECT COUNT(*) FROM gateway_db WHERE groupId = :groupId AND " +
+            RegisteredPhoneSql.IS_REGISTERED,
     )
     suspend fun countUsedByGroupId(groupId: Long): Int
 }

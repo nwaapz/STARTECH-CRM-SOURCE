@@ -187,6 +187,9 @@ function bot_update_serial_registration(
     $stmt->execute();
     $stmt->close();
 
+    require_once __DIR__ . '/sync/sync_buffer_helpers.php';
+    sync_buffer_enqueue_serial_lookup($conn, $serial, $table, $regSource);
+
     if (is_file(__DIR__ . '/activity_store.php')) {
         require_once __DIR__ . '/activity_store.php';
         $payload = ['serial' => $serial, 'phone' => $phone, 'source' => $regSource];
@@ -237,6 +240,9 @@ function bot_apply_city_only(mysqli $conn, string $phone, string $city, string $
     }
     $stmt->execute();
     $stmt->close();
+
+    require_once __DIR__ . '/sync/sync_buffer_helpers.php';
+    sync_buffer_enqueue_serial_lookup($conn, $serial, $table, $channel);
 
     if ($isSeller) {
         $msg = function_exists('crm_resolve_sms_template')
@@ -297,6 +303,8 @@ function bot_apply_city_km(mysqli $conn, string $phone, string $city, int $km, s
             $stmt->close();
         }
     }
+    require_once __DIR__ . '/sync/sync_buffer_helpers.php';
+    sync_buffer_enqueue_serial_lookup($conn, $serial, $table, $channel);
     $msg = function_exists('crm_resolve_sms_template')
         ? crm_resolve_sms_template($conn, 'client_reply_valid', [])
         : 'شماره سریال شما معتبر است و گارانتی شما آغاز شد.';

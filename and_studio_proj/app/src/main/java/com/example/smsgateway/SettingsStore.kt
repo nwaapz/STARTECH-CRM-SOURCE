@@ -170,7 +170,7 @@ class SettingsStore(context: Context) {
 
     fun getSmsProcessingConfig(): SmsProcessingConfig {
         val raw = prefs.getString(KEY_SMS_PROCESSING_CONFIG, null)
-        return SmsProcessingConfig.fromJsonString(raw)
+        return SmsProcessingConfig.fromJsonString(raw).normalized()
     }
 
     fun setSmsProcessingConfig(config: SmsProcessingConfig) {
@@ -180,6 +180,11 @@ class SettingsStore(context: Context) {
         prefs.edit()
             .putString(KEY_SMS_PROCESSING_CONFIG, normalized.toJsonObject().toString())
             .apply()
+        if (normalized.mode != SmsProcessingMode.SERIAL_ONLY &&
+            getVerificationMode() != VerificationMode.INTERNAL
+        ) {
+            setVerificationMode(VerificationMode.INTERNAL)
+        }
     }
 
     fun getSmsMessageOverrides(): Map<SmsMessageId, String> {
@@ -555,10 +560,75 @@ class SettingsStore(context: Context) {
         prefs.edit().putLong(KEY_CLOUD_SYNC_LAST_PULL_MS, ms).apply()
     }
 
+    /** Tie-breaker for pull keyset when many rows share the same sync_updated_ms. */
+    fun getCloudSyncLastPullId(): Long = prefs.getLong(KEY_CLOUD_SYNC_LAST_PULL_ID, 0L)
+
+    fun setCloudSyncLastPullId(id: Long) {
+        prefs.edit().putLong(KEY_CLOUD_SYNC_LAST_PULL_ID, id).apply()
+    }
+
+    fun getCloudSyncLastPullSrc(): Int = prefs.getInt(KEY_CLOUD_SYNC_LAST_PULL_SRC, 0)
+
+    fun setCloudSyncLastPullSrc(src: Int) {
+        prefs.edit().putInt(KEY_CLOUD_SYNC_LAST_PULL_SRC, src.coerceAtLeast(0)).apply()
+    }
+
+    fun resetCloudSyncPullCursor() {
+        prefs.edit()
+            .putLong(KEY_CLOUD_SYNC_LAST_PULL_MS, 0L)
+            .putLong(KEY_CLOUD_SYNC_LAST_PULL_ID, 0L)
+            .putInt(KEY_CLOUD_SYNC_LAST_PULL_SRC, 0)
+            .remove(KEY_CLOUD_SYNC_PULL_RESUME_PAGES)
+            .apply()
+    }
+
+    fun getCloudSyncPullResumePages(): Int = prefs.getInt(KEY_CLOUD_SYNC_PULL_RESUME_PAGES, 0)
+
+    fun setCloudSyncPullResumePages(pages: Int) {
+        prefs.edit().putInt(KEY_CLOUD_SYNC_PULL_RESUME_PAGES, pages.coerceAtLeast(0)).apply()
+    }
+
+    fun clearCloudSyncPullResumePages() {
+        prefs.edit().remove(KEY_CLOUD_SYNC_PULL_RESUME_PAGES).apply()
+    }
+
+    fun getCloudSyncLastDiffJson(): String =
+        prefs.getString(KEY_CLOUD_SYNC_LAST_DIFF_JSON, "").orEmpty()
+
+    fun setCloudSyncLastDiffJson(json: String) {
+        prefs.edit().putString(KEY_CLOUD_SYNC_LAST_DIFF_JSON, json).apply()
+    }
+
     fun getCloudSyncLastPushMs(): Long = prefs.getLong(KEY_CLOUD_SYNC_LAST_PUSH_MS, 0L)
 
     fun setCloudSyncLastPushMs(ms: Long) {
         prefs.edit().putLong(KEY_CLOUD_SYNC_LAST_PUSH_MS, ms).apply()
+    }
+
+    fun isBackupAutoEnabled(): Boolean = prefs.getBoolean(KEY_BACKUP_AUTO_ENABLED, true)
+
+    fun setBackupAutoEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_BACKUP_AUTO_ENABLED, enabled).apply()
+    }
+
+    fun getBackupAutoTargetId(): String =
+        prefs.getString(KEY_BACKUP_AUTO_TARGET_ID, "").orEmpty().trim()
+
+    fun setBackupAutoTargetId(id: String) {
+        prefs.edit().putString(KEY_BACKUP_AUTO_TARGET_ID, id.trim()).apply()
+    }
+
+    fun getBackupLastDailyDay(): String =
+        prefs.getString(KEY_BACKUP_LAST_DAILY_DAY, "").orEmpty().trim()
+
+    fun setBackupLastDailyDay(day: String) {
+        prefs.edit().putString(KEY_BACKUP_LAST_DAILY_DAY, day.trim()).apply()
+    }
+
+    fun getBackupLastSuccessMs(): Long = prefs.getLong(KEY_BACKUP_LAST_SUCCESS_MS, 0L)
+
+    fun setBackupLastSuccessMs(ms: Long) {
+        prefs.edit().putLong(KEY_BACKUP_LAST_SUCCESS_MS, ms).apply()
     }
 
     fun getSmsEngineMode(): SmsEngineMode {
@@ -572,6 +642,20 @@ class SettingsStore(context: Context) {
     }
 
     fun isMelipayamakPanelMode(): Boolean = getSmsEngineMode() == SmsEngineMode.MELIPAYAMAK_PANEL
+
+    /**
+     * When [isMelipayamakPanelMode] is true and this is true (default), inbound SMS is parsed from
+     * panel forwards but replies are sent via the device SIM gateway instead of Melipayamak API.
+     */
+    fun isMelipayamakRespondViaDeviceSim(): Boolean =
+        prefs.getBoolean(KEY_MELIPAYAMAK_RESPOND_VIA_DEVICE_SIM, true)
+
+    fun setMelipayamakRespondViaDeviceSim(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_MELIPAYAMAK_RESPOND_VIA_DEVICE_SIM, enabled).apply()
+    }
+
+    fun usesMelipayamakApiForOutbound(): Boolean =
+        isMelipayamakPanelMode() && !isMelipayamakRespondViaDeviceSim()
 
     fun getMelipayamakUsername(): String =
         prefs.getString(KEY_MELIPAYAMAK_USERNAME, "").orEmpty().trim()
@@ -609,6 +693,22 @@ class SettingsStore(context: Context) {
 
     fun setMelipayamakInboundShortCodes(codes: String) {
         prefs.edit().putString(KEY_MELIPAYAMAK_INBOUND_SHORT_CODES, codes.trim()).apply()
+    }
+
+    /** When true, only the embedded client phone in [getMelipayamakTestPhone] is processed. */
+    fun isMelipayamakTestModeEnabled(): Boolean =
+        prefs.getBoolean(KEY_MELIPAYAMAK_TEST_MODE_ENABLED, false)
+
+    fun setMelipayamakTestModeEnabled(enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_MELIPAYAMAK_TEST_MODE_ENABLED, enabled).apply()
+    }
+
+    /** Embedded client number (e.g. 9902648065), not the panel shortcode. */
+    fun getMelipayamakTestPhone(): String =
+        prefs.getString(KEY_MELIPAYAMAK_TEST_PHONE, "").orEmpty().trim()
+
+    fun setMelipayamakTestPhone(phone: String) {
+        prefs.edit().putString(KEY_MELIPAYAMAK_TEST_PHONE, phone.trim()).apply()
     }
 
     companion object {
@@ -689,12 +789,23 @@ class SettingsStore(context: Context) {
         private const val KEY_CLOUD_SYNC_URL = "cloud_sync_url"
         private const val KEY_CLOUD_SYNC_TOKEN = "cloud_sync_token"
         private const val KEY_CLOUD_SYNC_LAST_PULL_MS = "cloud_sync_last_pull_ms"
+        private const val KEY_CLOUD_SYNC_LAST_PULL_ID = "cloud_sync_last_pull_id"
+        private const val KEY_CLOUD_SYNC_LAST_PULL_SRC = "cloud_sync_last_pull_src"
+        private const val KEY_CLOUD_SYNC_PULL_RESUME_PAGES = "cloud_sync_pull_resume_pages"
+        private const val KEY_CLOUD_SYNC_LAST_DIFF_JSON = "cloud_sync_last_diff_json"
         private const val KEY_CLOUD_SYNC_LAST_PUSH_MS = "cloud_sync_last_push_ms"
+        private const val KEY_BACKUP_AUTO_ENABLED = "backup_auto_enabled"
+        private const val KEY_BACKUP_AUTO_TARGET_ID = "backup_auto_target_id"
+        private const val KEY_BACKUP_LAST_DAILY_DAY = "backup_last_daily_day"
+        private const val KEY_BACKUP_LAST_SUCCESS_MS = "backup_last_success_ms"
         private const val KEY_SMS_ENGINE_MODE = "sms_engine_mode"
         private const val KEY_MELIPAYAMAK_USERNAME = "melipayamak_username"
         private const val KEY_MELIPAYAMAK_PASSWORD = "melipayamak_password"
         private const val KEY_MELIPAYAMAK_SENDER_LINE = "melipayamak_sender_line"
         private const val KEY_MELIPAYAMAK_INBOUND_SHORT_CODES = "melipayamak_inbound_short_codes"
+        private const val KEY_MELIPAYAMAK_TEST_MODE_ENABLED = "melipayamak_test_mode_enabled"
+        private const val KEY_MELIPAYAMAK_TEST_PHONE = "melipayamak_test_phone"
+        private const val KEY_MELIPAYAMAK_RESPOND_VIA_DEVICE_SIM = "melipayamak_respond_via_device_sim"
 
         @Volatile
         private var instance: SettingsStore? = null

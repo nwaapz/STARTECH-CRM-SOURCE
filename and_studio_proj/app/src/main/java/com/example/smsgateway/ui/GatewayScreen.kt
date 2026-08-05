@@ -31,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -326,15 +327,9 @@ private fun StatusCard(running: Boolean) {
 @Composable
 private fun LicenseStatusCard() {
     val context = LocalContext.current
-    var summary by remember {
-        mutableStateOf(com.example.smsgateway.license.LicenseStore.getInstance(context).statusSummary())
-    }
-    LaunchedEffect(Unit) {
-        while (true) {
-            summary = com.example.smsgateway.license.LicenseStore.getInstance(context).statusSummary()
-            kotlinx.coroutines.delay(30_000)
-        }
-    }
+    val store = remember { com.example.smsgateway.license.LicenseStore.getInstance(context) }
+    val revision by store.revision.collectAsState()
+    val summary = remember(revision) { store.statusSummary() }
     val stateText = stringResource(
         when (summary.state) {
             com.example.smsgateway.license.LicenseState.NEVER_ACTIVATED -> R.string.license_state_never
@@ -344,6 +339,9 @@ private fun LicenseStatusCard() {
             com.example.smsgateway.license.LicenseState.LOCKED -> R.string.license_state_locked
         },
     )
+    val operational = remember(revision) {
+        com.example.smsgateway.license.LicenseGate.allowsOperationalUse(context)
+    }
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(
             modifier = Modifier.padding(16.dp),
@@ -354,7 +352,7 @@ private fun LicenseStatusCard() {
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(text = stateText)
-            if (!com.example.smsgateway.license.LicenseGate.allowsOperationalUse(context)) {
+            if (!operational) {
                 Text(
                     text = stringResource(
                         com.example.smsgateway.license.LicenseGate.blockReasonResId(context)

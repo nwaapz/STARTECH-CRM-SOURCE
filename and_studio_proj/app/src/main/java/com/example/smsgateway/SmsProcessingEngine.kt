@@ -187,7 +187,7 @@ class SmsProcessingEngine(
         val remaining = config.stepFieldsAfterSerial()
 
         when {
-            row.phone.isNullOrBlank() -> {
+            !isSerialUsed(row.phone) -> {
                 if (remaining.isEmpty()) {
                     return registerIfValid(
                         phone, serial, null, null, useFields = false, subscriptionId, registrationSource,
@@ -197,7 +197,7 @@ class SmsProcessingEngine(
                     return rejectSerial(phone, serial, SerialRegistrationErrorReason.ALREADY_USED)
                 }
             }
-            row.phone.trim() == phone.trim() -> {
+            row.phone!!.trim() == phone.trim() -> {
                 if (!row.needsCompletion()) {
                     val firstReg = onFullRegistrationSuccess(phone, row.serial)
                     val needsPhoto = isImageVerificationRequired(row.serial)
@@ -415,6 +415,12 @@ class SmsProcessingEngine(
         )
     }
 
+    /**
+     * Mode 2 (COMBINED): body is exactly an unused/own serial with no city/km.
+     * Bind the serial as incomplete and ask for remaining fields — never finish
+     * registration here (unlike Mode 1 SERIAL_ONLY). Known-city auto-complete is
+     * skipped so a lone serial SMS cannot complete warranty registration.
+     */
     private suspend fun tryRegisterPartialSerialOnly(
         phone: String,
         body: String,
@@ -422,27 +428,34 @@ class SmsProcessingEngine(
         subscriptionId: Int,
         registrationSource: String,
     ): GatewayApi.GatewayResponse? {
-        if (!requiresCityKm(config)) return null
+        if (config.mode != SmsProcessingMode.COMBINED_PATTERN) return null
 
         val serial = SerialNormalizer.normalizeSerial(body)
         if (serial.isEmpty()) return null
+        // Combined payloads must go through the full parser, not this path.
+        if (body.trim().contains(Regex("\\s"))) return null
 
         val dao = database.serialDao()
         val row = dao.findBySerial(serial) ?: return null
 
         when {
-            row.phone.isNullOrBlank() -> {
+            !isSerialUsed(row.phone) -> {
                 if (!registerPartialSerial(phone, serial, subscriptionId, registrationSource)) return null
             }
-            row.phone.trim() == phone.trim() -> {
-                val category = categoryFor(row)
-                val known = knownCityFor(phone)
-                if (!RegistrationFieldRules.needsCompletion(phone, row.city, row.km, category, known) &&
-                    row.registrationFieldsComplete
+            row.phone!!.trim() == phone.trim() -> {
+                if (row.registrationFieldsComplete &&
+                    !RegistrationFieldRules.needsCompletion(
+                        phone,
+                        row.city,
+                        row.km,
+                        categoryFor(row),
+                        knownCity = null,
+                    )
                 ) {
+                    // Already finished for this phone — let the combined parser reject.
                     return null
                 }
-                database.serialDao().markRegistrationIncomplete(
+                dao.markRegistrationIncomplete(
                     serial,
                     phone,
                     storedSubscriptionId(subscriptionId),
@@ -451,22 +464,11 @@ class SmsProcessingEngine(
             else -> return null
         }
 
-        val updated = applyKnownCityAndMaybeComplete(phone, serial) ?: return null
+        val updated = dao.findBySerial(serial) ?: return null
         val category = categoryFor(updated)
-        val known = knownCityFor(phone)
-        if (!RegistrationFieldRules.needsCompletion(phone, updated.city, updated.km, category, known)) {
-            sessionStore.clearSession(phone)
-            val firstReg = onFullRegistrationSuccess(phone, updated.serial)
-            val needsPhoto = isImageVerificationRequired(updated.serial)
-            return response(
-                replyValid(updated.serial),
-                firstRegistration = firstReg,
-                registrationSucceeded = true,
-                imageVerificationRequired = needsPhoto,
-                registeredSerial = updated.serial,
-            )
-        }
-        return response(partialMissingFieldsReply(updated, category, known))
+        // Ignore known city for this prompt so Mode 2 always requests remaining data
+        // after a serial-only message (completion only after a follow-up or full combined SMS).
+        return response(partialMissingFieldsReply(updated, category, knownCity = null))
     }
 
     private suspend fun registerPartialSerial(
@@ -478,8 +480,8 @@ class SmsProcessingEngine(
         val normalizedSerial = SerialNormalizer.normalizeSerial(serial)
         val dao = database.serialDao()
         val row = dao.findBySerial(normalizedSerial) ?: return false
-        if (!row.phone.isNullOrBlank()) {
-            return row.phone.trim() == phone.trim()
+        if (isSerialUsed(row.phone)) {
+            return row.phone!!.trim() == phone.trim()
         }
 
         val jalaliDateTime = JalaliHelper.nowJalaliDateTime()
@@ -629,7 +631,8 @@ class SmsProcessingEngine(
                 ?: return response(replyInvalid())
             val updatedCategory = categoryFor(updated)
             val updatedKnown = knownCityFor(phone)
-            if (RegistrationFieldRules.needsCompletion(
+            if (!updated.registrationFieldsComplete ||
+                RegistrationFieldRules.needsCompletion(
                     phone,
                     updated.city,
                     updated.km,
@@ -721,7 +724,7 @@ class SmsProcessingEngine(
     }
 
     private fun isSerialUsed(phone: String?): Boolean {
-        return phone != null && phone.trim().isNotEmpty()
+        return PhoneUtils.isRegisteredPhone(phone)
     }
 
     private fun requiresCityKm(config: SmsProcessingConfig): Boolean {

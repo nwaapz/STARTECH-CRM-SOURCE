@@ -20,11 +20,13 @@ import com.example.smsgateway.RubikaApi
 import com.example.smsgateway.RubikaChatItem
 import com.example.smsgateway.RubikaChatStore
 import com.example.smsgateway.RubikaPoller
+import com.example.smsgateway.SerialNormalizer
 import com.example.smsgateway.SerialGenerator
 import com.example.smsgateway.SerialGroupCategory
 import com.example.smsgateway.SerialGroupGenerationMode
 import com.example.smsgateway.SerialGroupWarranty
 import com.example.smsgateway.SerialPhotoVerificationService
+import com.example.smsgateway.SerialStateCsv
 import com.example.smsgateway.SettingsStore
 import com.example.smsgateway.SimCardHelper
 import com.example.smsgateway.SimQuotaRouter
@@ -218,6 +220,7 @@ fun Application.configureLanRoutes(
                         count = body.count,
                         letterCount = body.letterCount,
                         digitCount = body.digitCount,
+                        pattern = body.pattern,
                         prefix = body.prefix.orEmpty(),
                         city = body.city,
                         km = body.km,
@@ -281,6 +284,104 @@ fun Application.configureLanRoutes(
                 }
             }
 
+            post("/serials/import-csv") {
+                when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
+                    LanAccessResult.OK -> Unit
+                    else -> {
+                        LanAuth.reject(call, access)
+                        return@post
+                    }
+                }
+                var score = 1
+                var category = SerialGroupCategory.DEFAULT
+                var description: String? = null
+                var warrantyMonths: Int? = null
+                var warrantyKm: Int? = null
+                var imageVerificationRequired = false
+                var tempFile: java.io.File? = null
+                try {
+                    val multipart = call.receiveMultipart()
+                    multipart.forEachPart { part ->
+                        try {
+                            when (part) {
+                                is PartData.FormItem -> {
+                                    val value = part.value.trim()
+                                    when (part.name) {
+                                        "score" -> score = value.toIntOrNull()?.coerceAtLeast(1) ?: 1
+                                        "category" -> category = value.ifBlank { SerialGroupCategory.DEFAULT }
+                                        "description" -> description = value.takeIf { it.isNotEmpty() }
+                                        "warrantyMonths" -> warrantyMonths = value.toIntOrNull()?.takeIf { it > 0 }
+                                        "warrantyKm" -> warrantyKm = value.toIntOrNull()?.takeIf { it > 0 }
+                                        "imageVerificationRequired" -> {
+                                            imageVerificationRequired = value.equals("true", ignoreCase = true) ||
+                                                value == "1" ||
+                                                value.equals("on", ignoreCase = true)
+                                        }
+                                    }
+                                }
+                                is PartData.FileItem -> {
+                                    if (part.name == "file" || tempFile == null) {
+                                        val dest = java.io.File.createTempFile(
+                                            "serial_import_",
+                                            ".csv",
+                                            appContext.cacheDir,
+                                        )
+                                        part.streamProvider().use { input ->
+                                            dest.outputStream().use { output -> input.copyTo(output) }
+                                        }
+                                        tempFile?.delete()
+                                        tempFile = dest
+                                    }
+                                }
+                                else -> Unit
+                            }
+                        } finally {
+                            part.dispose()
+                        }
+                    }
+
+                    val file = tempFile
+                    if (file == null || !file.exists() || file.length() == 0L) {
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "CSV file is required"))
+                        return@post
+                    }
+
+                    val result = withContext(Dispatchers.IO) {
+                        val parseResult = file.bufferedReader(Charsets.UTF_8).use { reader ->
+                            SerialStateCsv.parse(reader)
+                        }
+                        serialGenerator.generateImportWithState(
+                            SerialGenerator.ImportStateMetaRequest(
+                                description = description,
+                                score = score,
+                                category = category,
+                                warrantyMonths = warrantyMonths,
+                                warrantyKm = warrantyKm,
+                                imageVerificationRequired = imageVerificationRequired,
+                            ),
+                            parseResult,
+                        )
+                    }
+                    call.respond(
+                        BatchResponseBody(
+                            inserted = result.inserted,
+                            skipped = result.skipped,
+                            total = result.total,
+                            groupId = result.groupId,
+                            usedInserted = result.usedInserted,
+                            unusedInserted = result.unusedInserted,
+                            invalidCount = result.invalidCount,
+                        ),
+                    )
+                } catch (e: SerialStateCsv.CsvFormatException) {
+                    call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = e.message ?: "Invalid CSV"))
+                } catch (e: SerialGenerator.ValidationException) {
+                    call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = e.message ?: "Validation error"))
+                } finally {
+                    tempFile?.delete()
+                }
+            }
+
             get("/serial-groups") {
                 when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
                     LanAccessResult.OK -> Unit
@@ -291,8 +392,10 @@ fun Application.configureLanRoutes(
                 }
                 val items = withContext(Dispatchers.IO) {
                     val groupDao = database.serialGroupDao()
+                    val countsById = database.serialDao().countTotalsByGroup()
+                        .associateBy { it.groupId }
                     groupDao.listAll().map { group ->
-                        group.toResponse(groupDao, serialGenerator)
+                        group.toResponse(serialGenerator, countsById[group.id])
                     }
                 }
                 call.respond(SerialGroupListResponse(items = items))
@@ -609,17 +712,18 @@ fun Application.configureLanRoutes(
                     val dao = database.serialDao()
                     val row = dao.findById(id)
                         ?: return@withContext ReminderResult.NotFound
-                    if (row.phone.isNullOrBlank()) {
+                    if (!PhoneUtils.isRegisteredPhone(row.phone)) {
                         return@withContext ReminderResult.NoPhone
                     }
+                    val phone = row.phone!!
                     val category = row.groupId?.let { gid ->
                         SerialGroupCategory.normalizeOrDefault(
                             database.serialGroupDao().findById(gid)?.category,
                         )
                     } ?: SerialGroupCategory.DEFAULT
-                    val knownCity = dao.findLatestCityByPhone(row.phone)?.takeIf { it.isNotBlank() }
+                    val knownCity = dao.findLatestCityByPhone(phone)?.takeIf { it.isNotBlank() }
                     if (!RegistrationFieldRules.needsCompletion(
-                            row.phone,
+                            phone,
                             row.city,
                             row.km,
                             category,
@@ -683,7 +787,7 @@ fun Application.configureLanRoutes(
                     return@put
                 }
                 val body = call.receive<UpdateSerialRegistrationRequest>()
-                val serialTrim = body.serial.trim()
+                val serialTrim = SerialNormalizer.normalizeSerial(body.serial)
                 if (serialTrim.isEmpty()) {
                     call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "Ø³Ø±ÛŒØ§Ù„ Ø§Ù„Ø²Ø§Ù…ÛŒ Ø§Ø³Øª"))
                     return@put
@@ -699,9 +803,10 @@ fun Application.configureLanRoutes(
                 val result = withContext(Dispatchers.IO) {
                     val dao = database.serialDao()
                     val row = dao.findById(id) ?: return@withContext UpdateSerialResult.NotFound
-                    if (row.phone.isNullOrBlank()) {
+                    if (!PhoneUtils.isRegisteredPhone(row.phone)) {
                         return@withContext UpdateSerialResult.NotRegistered
                     }
+                    val phone = row.phone!!
                     val normalizedDate = JalaliHelper.normalizeStoredDateTime(dateTrim)
                     val duplicate = dao.findBySerial(serialTrim)
                     if (duplicate != null && duplicate.id != id) {
@@ -714,7 +819,6 @@ fun Application.configureLanRoutes(
                     } ?: SerialGroupCategory.DEFAULT
                     val requiresKm = if (RegistrationFieldRules.requiresKm(category)) 1 else 0
                     val oldSerial = row.serial
-                    val phone = row.phone
                     val updatedRows = dao.updateRegistrationById(
                         id = id,
                         serial = serialTrim,
@@ -726,7 +830,7 @@ fun Application.configureLanRoutes(
                     if (updatedRows == 0) {
                         return@withContext UpdateSerialResult.NotFound
                     }
-                    if (!oldSerial.equals(serialTrim, ignoreCase = true) && !phone.isNullOrBlank()) {
+                    if (!oldSerial.equals(serialTrim, ignoreCase = true)) {
                         database.serialPhotoSubmissionDao().updateSerialForPhone(
                             oldSerial = oldSerial,
                             newSerial = serialTrim,
@@ -2966,13 +3070,15 @@ private fun SerialGenerator.DuplicateSerialException.toDuplicateResponse() = Dup
     },
 )
 
-private suspend fun SerialGroupEntity.toResponse(
-    groupDao: com.example.smsgateway.data.SerialGroupDao,
+private fun SerialGroupEntity.toResponse(
     serialGenerator: SerialGenerator,
+    counts: com.example.smsgateway.data.GroupIdCountRow? = null,
+    totalOverride: Int? = null,
+    usedOverride: Int? = null,
 ): SerialGroupResponse {
-    val total = groupDao.countByGroupId(id)
-    val used = groupDao.countUsedByGroupId(id)
-    val unused = total - used
+    val total = totalOverride ?: counts?.total ?: 0
+    val used = usedOverride ?: counts?.used ?: 0
+    val unused = (total - used).coerceAtLeast(0)
     val salePercentage = if (total > 0) {
         kotlin.math.round(used * 1000.0 / total) / 10.0
     } else {
@@ -2998,6 +3104,15 @@ private suspend fun SerialGroupEntity.toResponse(
         salePercentage = salePercentage,
         createdAt = createdAt,
     )
+}
+
+private suspend fun SerialGroupEntity.toResponse(
+    groupDao: com.example.smsgateway.data.SerialGroupDao,
+    serialGenerator: SerialGenerator,
+): SerialGroupResponse {
+    val total = groupDao.countByGroupId(id)
+    val used = groupDao.countUsedByGroupId(id)
+    return toResponse(serialGenerator, totalOverride = total, usedOverride = used)
 }
 
 private suspend fun SerialPhotoSubmissionEntity.toPhotoResponse(

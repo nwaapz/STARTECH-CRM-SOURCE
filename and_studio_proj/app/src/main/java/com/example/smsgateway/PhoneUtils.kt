@@ -2,6 +2,56 @@ package com.example.smsgateway
 
 object PhoneUtils {
     /**
+     * Pick a usable SMS address from PDU fields when it is already an Iranian mobile.
+     * Does not look up contacts — see [DeviceContactHelper.resolveDeviceSimMobileSender].
+     */
+    fun resolveSmsSenderAddress(
+        originatingAddress: String?,
+        displayOriginatingAddress: String?,
+    ): String {
+        val candidates = listOf(originatingAddress, displayOriginatingAddress)
+            .map { it?.trim().orEmpty() }
+            .filter { it.isNotEmpty() }
+        return candidates.firstOrNull { isRegisteredPhone(it) }.orEmpty()
+    }
+
+    /**
+     * True when [phone] is a real registration (valid-looking Iranian mobile).
+     * Unused inventory: null, blank, `"0"`, SQL/CSV null tokens (`NULL`, `\N`, …),
+     * or anything that is not a phone number.
+     *
+     * Short codes (panel/bank/provider lines) never match, since they are not
+     * `09…` / `+989…` mobile numbers.
+     */
+    fun isRegisteredPhone(phone: String?): Boolean {
+        val trimmed = phone?.trim().orEmpty()
+        if (trimmed.isEmpty() || trimmed == "0") return false
+        if (isSqlNullToken(trimmed)) return false
+        return normalizeToInternational(trimmed) != null
+    }
+
+    /**
+     * Nulls out blank / sentinel / non-phone values; otherwise returns display-normalized MSISDN.
+     */
+    fun nullIfUnregistered(phone: String?): String? {
+        val trimmed = phone?.trim().orEmpty()
+        if (!isRegisteredPhone(trimmed)) return null
+        return formatForDisplay(trimmed)
+    }
+
+    /** True for empty or export placeholders that mean SQL NULL in CSV dumps. */
+    fun isSqlNullToken(value: String?): Boolean {
+        val trimmed = value?.trim().orEmpty()
+        if (trimmed.isEmpty()) return true
+        return trimmed.equals("null", ignoreCase = true) ||
+            trimmed.equals("nil", ignoreCase = true) ||
+            trimmed == "\\N" ||
+            trimmed.equals("n/a", ignoreCase = true) ||
+            trimmed == "-" ||
+            trimmed == "."
+    }
+
+    /**
      * Converts Iranian international format (+98 / 98) to local 09... for display and SMS.
      */
     fun normalizeForSmsSend(phone: String): String {
@@ -33,30 +83,42 @@ object PhoneUtils {
      */
     fun normalizeToInternational(phone: String?): String? {
         if (phone.isNullOrBlank()) return null
-        var digits = normalizeToAsciiDigits(phone.trim())
-            .filter { it.isDigit() }
+        val ascii = normalizeToAsciiDigits(phone.trim()).replace(" ", "")
+        var digits = ascii.filter { it.isDigit() }
         if (digits.isEmpty()) return null
 
-        // 0098XXXXXXXXXX -> 98XXXXXXXXXX
-        if (digits.startsWith("0098")) {
-            digits = digits.substring(2)
+        // +98 / 0098 is Iran's country prefix: remove it, then judge what is left.
+        // "+9820001390" -> "20001390" (short code, rejected below);
+        // "+989121234567" -> "9121234567" (real mobile).
+        val hadCountryPrefix: Boolean = when {
+            ascii.startsWith("+") && digits.startsWith("98") -> {
+                digits = digits.substring(2)
+                true
+            }
+            // '+' with a non-Iranian country code: not an Iranian number at all.
+            ascii.startsWith("+") -> return null
+            digits.startsWith("0098") -> {
+                digits = digits.substring(4)
+                true
+            }
+            // International form typed without '+': 98 + full 10-digit number.
+            digits.startsWith("98") && digits.length == 12 -> {
+                digits = digits.substring(2)
+                true
+            }
+            else -> false
         }
 
+        // What remains must be an Iranian mobile: 9XXXXXXXXX (10 digits),
+        // optionally with a leading 0 when no country prefix was used.
         val national: String = when {
-            // Already international: 98 + 10-digit mobile starting with 9.
-            digits.startsWith("98") && digits.length == 12 && digits[2] == '9' ->
-                digits.substring(2)
-            // Local format: 0 + 10-digit mobile (09XXXXXXXXX).
-            digits.startsWith("0") && digits.length == 11 && digits[1] == '9' ->
-                digits.substring(1)
-            // Bare 10-digit mobile without leading zero (9XXXXXXXXX).
-            digits.length == 10 && digits[0] == '9' ->
+            digits.length == 11 && digits.startsWith("09") -> digits.substring(1)
+            // Bare "98…" without any country prefix is a country-code artifact
+            // (no Iranian mobile prefix 098x exists), so reject it.
+            digits.length == 10 && digits[0] == '9' && (hadCountryPrefix || digits[1] != '8') ->
                 digits
             else -> return null
         }
-
-        // national is a 10-digit mobile starting with 9.
-        if (national.length != 10 || national[0] != '9') return null
         return "98$national"
     }
 

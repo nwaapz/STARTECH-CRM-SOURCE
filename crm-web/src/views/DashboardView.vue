@@ -6,7 +6,7 @@ import SerialErrorDetailModal from '@/components/SerialErrorDetailModal.vue'
 import JalaliDateSelects from '@/components/JalaliDateSelects.vue'
 import { useSync } from '@/composables/useSync'
 import { fetchSerials, fetchSerialErrorClients, fetchRegistrationsByDay } from '@/api/client'
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type { SerialErrorClientSummary, SerialRow } from '@/api/types'
 import { formatDateTimeFa } from '@/utils/formatCommunication'
 import { formatPhoneForDisplay } from '@/utils/formatPhone'
@@ -93,7 +93,9 @@ const registersTotal = ref(0)
 const recentRows = ref<SerialRow[]>([])
 
 const chartCanvas = ref<HTMLCanvasElement | null>(null)
+const chartWrap = ref<HTMLElement | null>(null)
 let chartInstance: Chart | null = null
+let chartResizeObserver: ResizeObserver | null = null
 const monthDefault = currentJalaliMonthRange()
 const chartFromDraft = ref(monthDefault.from)
 const chartToDraft = ref(monthDefault.to)
@@ -111,6 +113,12 @@ function chartLabel(day: string, sameMonth: boolean): string {
     return day.slice(5) // MM/DD
   }
   return day
+}
+
+function resizeChart() {
+  if (!chartInstance || !chartWrap.value) return
+  // Force Chart.js to re-read parent size (LAN WebView / RTL often init at half width).
+  chartInstance.resize()
 }
 
 async function loadChart() {
@@ -135,8 +143,12 @@ async function loadChart() {
       data.from.length >= 7 && data.to.length >= 7 && data.from.slice(0, 7) === data.to.slice(0, 7)
     const labels = data.days.map((d) => chartLabel(d.day, sameMonth))
     const counts = data.days.map((d) => d.count)
+    await nextTick()
     if (!chartCanvas.value) return
-    if (chartInstance) chartInstance.destroy()
+    if (chartInstance) {
+      chartInstance.destroy()
+      chartInstance = null
+    }
     chartInstance = new Chart(chartCanvas.value, {
       type: 'bar',
       data: {
@@ -148,20 +160,40 @@ async function loadChart() {
             backgroundColor: 'rgba(54, 162, 235, 0.55)',
             borderColor: 'rgba(54, 162, 235, 1)',
             borderWidth: 1,
+            borderRadius: 3,
+            maxBarThickness: 28,
           },
         ],
       },
       options: {
         responsive: true,
         maintainAspectRatio: false,
+        resizeDelay: 0,
+        layout: {
+          padding: { top: 8, right: 8, bottom: 4, left: 4 },
+        },
         scales: {
+          x: {
+            ticks: {
+              maxRotation: 0,
+              autoSkip: true,
+              autoSkipPadding: 4,
+            },
+            grid: { display: false },
+          },
           y: {
             beginAtZero: true,
-            ticks: { stepSize: 1 },
+            ticks: { stepSize: 1, precision: 0 },
           },
         },
         plugins: { legend: { display: false } },
       },
+    })
+    await nextTick()
+    requestAnimationFrame(() => {
+      resizeChart()
+      // Second pass after WebView finishes layout
+      window.setTimeout(() => resizeChart(), 80)
     })
   } catch (e) {
     chartError.value = e instanceof Error ? e.message : 'خطا در بارگذاری نمودار'
@@ -216,12 +248,24 @@ onMounted(() => {
   errorsPollTimer = setInterval(() => {
     void loadErrors()
   }, 5000)
+  if (typeof ResizeObserver !== 'undefined') {
+    chartResizeObserver = new ResizeObserver(() => {
+      resizeChart()
+    })
+    void nextTick(() => {
+      if (chartWrap.value) chartResizeObserver?.observe(chartWrap.value)
+    })
+  }
+  window.addEventListener('resize', resizeChart)
 })
 
 onUnmounted(() => {
   if (errorsPollTimer) {
     clearInterval(errorsPollTimer)
   }
+  chartResizeObserver?.disconnect()
+  chartResizeObserver = null
+  window.removeEventListener('resize', resizeChart)
   if (chartInstance) {
     chartInstance.destroy()
     chartInstance = null
@@ -281,7 +325,7 @@ onUnmounted(() => {
             </button>
           </div>
           <p v-if="chartError" class="error">{{ chartError }}</p>
-          <div class="chart-wrap">
+          <div ref="chartWrap" class="chart-wrap" dir="ltr">
             <canvas ref="chartCanvas"></canvas>
           </div>
         </div>
@@ -433,8 +477,19 @@ onUnmounted(() => {
 
 .chart-wrap {
   width: 100%;
-  height: 320px;
+  max-width: 100%;
+  height: min(360px, 55vw);
+  min-height: 260px;
   position: relative;
+  display: block;
+  box-sizing: border-box;
+}
+
+.chart-wrap canvas {
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: 100%;
 }
 
 .error {

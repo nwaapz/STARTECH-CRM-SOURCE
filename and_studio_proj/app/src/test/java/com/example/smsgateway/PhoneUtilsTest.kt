@@ -39,8 +39,77 @@ class PhoneUtilsTest {
     }
 
     @Test
-    fun isPhoneLikeInput_acceptsPersianPhone() {
-        assertEquals(true, PhoneUtils.isPhoneLikeInput("۰۹۱۲۱۲۳۴۵۶۷"))
-        assertEquals("09121234567", PhoneUtils.formatForDisplay("۰۹۱۲۱۲۳۴۵۶۷"))
+    fun isRegisteredPhone_requiresRealIranianMobile() {
+        assertEquals(false, PhoneUtils.isRegisteredPhone(null))
+        assertEquals(false, PhoneUtils.isRegisteredPhone(""))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("   "))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("0"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("NULL"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("null"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("\\N"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("-"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("abc"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("12345"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("M251437"))
+        // Bank / government / GSM-provider style senders (not Iranian mobile format).
+        assertEquals(false, PhoneUtils.isRegisteredPhone("1000"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("20001390"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("2001390"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("+9820001390"))
+        // Same short code as bare digits / 00-prefixed international — the 10-digit
+        // "9820001390" must not be mistaken for a bare mobile (no 098x prefix exists).
+        assertEquals(false, PhoneUtils.isRegisteredPhone("9820001390"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("009820001390"))
+        assertEquals(true, PhoneUtils.isRegisteredPhone("00989121234567"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("88937656753253"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("BankMelli"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("+9821"))
+        assertEquals(true, PhoneUtils.isRegisteredPhone("09121234567"))
+        assertEquals(true, PhoneUtils.isRegisteredPhone("+989121234567"))
+        assertEquals(true, PhoneUtils.isRegisteredPhone("989121234567"))
+        assertEquals(true, PhoneUtils.isRegisteredPhone("9121234567"))
+        assertEquals(null, PhoneUtils.nullIfUnregistered("NULL"))
+        assertEquals(null, PhoneUtils.nullIfUnregistered("not-a-phone"))
+        assertEquals("09121234567", PhoneUtils.nullIfUnregistered("+989121234567"))
+    }
+
+    @Test
+    fun resolveSmsSenderAddress_prefersPhoneOverContactName() {
+        assertEquals(
+            "09902648065",
+            PhoneUtils.resolveSmsSenderAddress(
+                originatingAddress = "09902648065",
+                displayOriginatingAddress = "Hosein",
+            ),
+        )
+        assertEquals(
+            "09902648065",
+            PhoneUtils.resolveSmsSenderAddress(
+                originatingAddress = "Hosein",
+                displayOriginatingAddress = "09902648065",
+            ),
+        )
+        assertEquals(
+            "",
+            PhoneUtils.resolveSmsSenderAddress(
+                originatingAddress = "20001390",
+                displayOriginatingAddress = "ملی پیامک",
+            ),
+        )
+        assertEquals(
+            "",
+            PhoneUtils.resolveSmsSenderAddress(
+                originatingAddress = "Hosein",
+                displayOriginatingAddress = null,
+            ),
+        )
+    }
+
+    @Test
+    fun isRegisteredPhone_accepts0990StyleMobile() {
+        assertEquals(true, PhoneUtils.isRegisteredPhone("09902648065"))
+        assertEquals(true, PhoneUtils.isRegisteredPhone("+989902648065"))
+        assertEquals(true, PhoneUtils.isRegisteredPhone("989902648065"))
+        assertEquals(false, PhoneUtils.isRegisteredPhone("Hosein"))
     }
 }

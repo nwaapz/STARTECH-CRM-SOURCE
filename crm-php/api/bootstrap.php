@@ -56,7 +56,7 @@ if (!is_file($dbConfig)) {
 require_once $dbConfig;
 
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Headers: Authorization, Content-Type');
+header('Access-Control-Allow-Headers: Authorization, Content-Type, X-Sync-Token');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
     http_response_code(204);
@@ -190,6 +190,14 @@ function ensure_remote_schema(mysqli $conn): void {
             } catch (Throwable $e) {
                 json_error('Schema init failed (' . $file . '): ' . $e->getMessage(), 500);
             }
+        }
+    }
+
+    $bufHelper = __DIR__ . '/sync/sync_buffer_helpers.php';
+    if (is_file($bufHelper)) {
+        require_once $bufHelper;
+        if (function_exists('sync_ensure_buffer_table')) {
+            sync_ensure_buffer_table($conn);
         }
     }
 

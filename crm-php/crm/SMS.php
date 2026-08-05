@@ -167,6 +167,7 @@ function smsHasColumn($conn, $table, $col)
 
 function smsRecordRegistrationActivity($conn, $phone, $serial, $extra = [])
 {
+    smsEnqueueCloudSyncBuffer($conn, $serial, is_array($extra) ? ($extra['_table'] ?? null) : null);
     $store = null;
     foreach ([
         dirname(__DIR__) . '/api/activity_store.php',
@@ -188,6 +189,33 @@ function smsRecordRegistrationActivity($conn, $phone, $serial, $extra = [])
         'date' => date('Y-m-d'),
     ], is_array($extra) ? $extra : []);
     crm_activity_record($conn, 'registered', $payload);
+}
+
+/**
+ * Push remote SMS registration changes into crm_sync_buffer for phone pull.
+ */
+function smsEnqueueCloudSyncBuffer($conn, $serial, $table = null)
+{
+    $helpers = null;
+    foreach ([
+        dirname(__DIR__) . '/api/sync/sync_buffer_helpers.php',
+        __DIR__ . '/../api/sync/sync_buffer_helpers.php',
+        __DIR__ . '/api/sync/sync_buffer_helpers.php',
+    ] as $candidate) {
+        if (is_file($candidate)) {
+            $helpers = $candidate;
+            break;
+        }
+    }
+    if ($helpers === null) {
+        return;
+    }
+    require_once $helpers;
+    if (!function_exists('sync_buffer_enqueue_serial_lookup')) {
+        return;
+    }
+    $tableName = is_string($table) && $table !== '' ? $table : null;
+    sync_buffer_enqueue_serial_lookup($conn, (string) $serial, $tableName, 'sms');
 }
 
 function smsRecordRegistrationError($conn, $phone, $serial, $reason)
@@ -601,25 +629,8 @@ function client_calling_for_unused_serial($serial, $phone, $conn)
         return;
     }
 
-    $sqlAd = "SELECT message FROM ad_sms";
-    $resultAd = mysqli_query($conn, $sqlAd);
-
-    if ($resultAd && mysqli_num_rows($resultAd) > 0) {
-        while ($adRow = mysqli_fetch_assoc($resultAd)) {
-            $message = $adRow['message'];
-            SendMessage($phone, $message);
-            sleep(4); // delay between messages
-        }
-    }
-
-    $sqlMain = "SELECT a FROM main_sms LIMIT 1";
-    $resultMain = mysqli_query($conn, $sqlMain);
-    if ($resultMain && mysqli_num_rows($resultMain) > 0) {
-        $rowMain = mysqli_fetch_assoc($resultMain);
-        $message = $rowMain['a'];
-        SendMessage($phone, $message);
-    }
-
+    // Bind phone BEFORE ads/prompt. Melipayamak/PHP often times out during sleep(4)
+    // ad loops; if phone is written after the prompt, city+km replies find no session.
     $currentTime = date("Y-m-d");
     $syncMs = (int) round(microtime(true) * 1000);
     if (smsHasColumn($conn, 'old_serials', 'sync_updated_ms')) {
@@ -642,9 +653,27 @@ function client_calling_for_unused_serial($serial, $phone, $conn)
         $stmtUpdate->close();
         exit;
     }
-
     $stmtUpdate->close();
     smsRecordRegistrationActivity($conn, $phone, $serial);
+
+    $sqlAd = "SELECT message FROM ad_sms";
+    $resultAd = mysqli_query($conn, $sqlAd);
+
+    if ($resultAd && mysqli_num_rows($resultAd) > 0) {
+        while ($adRow = mysqli_fetch_assoc($resultAd)) {
+            $message = $adRow['message'];
+            SendMessage($phone, $message);
+            sleep(4); // delay between messages
+        }
+    }
+
+    $sqlMain = "SELECT a FROM main_sms LIMIT 1";
+    $resultMain = mysqli_query($conn, $sqlMain);
+    if ($resultMain && mysqli_num_rows($resultMain) > 0) {
+        $rowMain = mysqli_fetch_assoc($resultMain);
+        $message = $rowMain['a'];
+        SendMessage($phone, $message);
+    }
 }
 
 /**
@@ -797,6 +826,7 @@ function SToM_City_confirm($city, $phone, $conn)
     }
 
     $stmtUpdate->close();
+    smsEnqueueCloudSyncBuffer($conn, $serial);
     if (isSToMRange($serial)) {
         syncSToMSerialToMcode($conn, $serial, $phone, $city);
     }
@@ -839,6 +869,7 @@ function Client_Km_City_confirm($km, $city, $phone, $conn)
                 exit;
             }
             $stmtUpdate->close();
+            smsEnqueueCloudSyncBuffer($conn, $serial);
             if (isSToMRange($serial)) {
                 syncSToMSerialToMcode($conn, $serial, $phone, $city);
             }
@@ -864,11 +895,15 @@ function Client_Km_City_confirm($km, $city, $phone, $conn)
         }
 
         $stmtUpdate->close();
+        smsEnqueueCloudSyncBuffer($conn, $serial);
         SendConfirmSms($phone, $conn);
         $stmt->close();
     } else {
         $stmt->close();
-        Mcode_City_confirm($city, $phone, $conn);
+        // Client city+km must not fall through to Mcode (seller) confirm —
+        // that always yields "سابقه یافت نشد" when the old_serials session is missing.
+        $message = "سابقه ثبت نام یافت نشد. لطفا ابتدا کد سریال خود را ارسال کنید." . PORTAL_SMS_SUFFIX;
+        SendMessage($phone, $message);
     }
 }
 

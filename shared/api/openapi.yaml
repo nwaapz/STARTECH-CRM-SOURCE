@@ -114,6 +114,35 @@ paths:
         "401":
           description: Invalid PIN
 
+  /api/serials/import-csv:
+    post:
+      summary: Import serials with registration state from a named-header CSV (LAN gateway only)
+      description: |
+        Served by the Android LAN hotspot API (local Room DB). Not available on remote CRM PHP.
+        Multipart upload. One CSV file becomes one serial group (`generation_mode=import`).
+        Required header: `serial`. Optional: `phone`, `date` (alias `date_jalali`), `city`, `km`.
+        Unused inventory = blank/`0` phone and empty date. Registered = real phone + optional Jalali date.
+        Max 750000 data rows per request.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: "#/components/schemas/ImportCsvMultipart"
+      responses:
+        "200":
+          description: Import result including used/unused inserted counts
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ImportCsvResponse"
+        "400":
+          description: Validation error (missing serial header, no rows, etc.)
+        "401":
+          description: Invalid PIN
+
   /api/serial-groups:
     get:
       summary: List serial generation groups with usage stats
@@ -1417,12 +1446,80 @@ paths:
 
   /api/admin/sync-status:
     get:
-      summary: Cloud sync health
+      summary: Dual-buffer cloud sync health (pending local buffer, conflicts on device)
       security:
         - bearerAuth: []
       responses:
         "200":
-          description: Status
+          description: Status including pendingOutbox and conflictCount
+
+  /api/sync/buffer:
+    get:
+      summary: List remote pending change-buffer entries (device sync token)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Pending buffer entries
+        "401":
+          description: Unauthorized
+
+  /api/sync/buffer/apply:
+    post:
+      summary: Apply phone buffer entries onto remote DB (device sync token)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Applied count
+        "401":
+          description: Unauthorized
+
+  /api/sync/buffer/ack:
+    post:
+      summary: Acknowledge remote buffer entries applied on phone (device sync token)
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Acked count
+        "401":
+          description: Unauthorized
+
+  /api/sync/buffer/backfill:
+    post:
+      summary: >-
+        Catch-up step (device sync token): re-enqueue the most recently
+        registered serials as pending buffer entries (count-based, up to
+        5000; not date-based) so a phone/LAN web that's behind — e.g. after
+        loading a stale CSV/backup — can pull them via the normal
+        buffer/apply/ack flow. Not called on its own; it is the first step
+        of the "Get from server" action (Android + LAN CRM web).
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Number of rows enqueued
+        "401":
+          description: Unauthorized
+
+  /api/sync/manifest:
+    get:
+      summary: Retired — returns 410 Gone (use buffer endpoints)
+      security:
+        - bearerAuth: []
+      responses:
+        "410":
+          description: Gone
+
+  /api/sync/pull/group:
+    get:
+      summary: Retired — returns 410 Gone (use buffer endpoints)
+      security:
+        - bearerAuth: []
+      responses:
+        "410":
+          description: Gone
 
 components:
   securitySchemes:
@@ -1589,6 +1686,12 @@ components:
           minimum: 0
           maximum: 32
           description: Exact number of digit characters per serial
+        pattern:
+          type: string
+          nullable: true
+          description: >
+            Optional fixed body pattern using C (letter) and D (digit), e.g. CDDDDDDD.
+            When omitted, letter positions are shuffled randomly within the body.
         city:
           type: string
         km:
@@ -1620,7 +1723,7 @@ components:
           type: array
           items:
             type: string
-          maxItems: 10000
+          maxItems: 500000
           description: Serial values (typically first column of an Excel file)
         city:
           type: string
@@ -1644,6 +1747,39 @@ components:
           type: integer
           nullable: true
           minimum: 1
+        imageVerificationRequired:
+          type: boolean
+          default: false
+
+    ImportCsvMultipart:
+      type: object
+      required: [file, score, category]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: UTF-8 CSV with header row (serial,phone,date,city,km)
+        description:
+          type: string
+        score:
+          type: integer
+          default: 1
+          minimum: 1
+        category:
+          type: string
+          enum: [end_user_client, seller_to_end_user]
+          default: end_user_client
+        warrantyMonths:
+          type: integer
+          nullable: true
+          minimum: 1
+        warrantyKm:
+          type: integer
+          nullable: true
+          minimum: 1
+        imageVerificationRequired:
+          type: boolean
+          default: false
 
     BatchResponse:
       type: object
@@ -1658,6 +1794,21 @@ components:
           type: integer
           format: int64
           nullable: true
+
+    ImportCsvResponse:
+      allOf:
+        - $ref: "#/components/schemas/BatchResponse"
+        - type: object
+          properties:
+            usedInserted:
+              type: integer
+              description: Inserted rows with a registered phone
+            unusedInserted:
+              type: integer
+              description: Inserted rows treated as unused inventory
+            invalidCount:
+              type: integer
+              description: Rows skipped for invalid serial format
 
     SerialGroup:
       type: object

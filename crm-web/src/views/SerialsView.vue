@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import NavBar from '@/components/NavBar.vue'
 import ConfirmModal from '@/components/ConfirmModal.vue'
 import DuplicateSerialWarningModal from '@/components/DuplicateSerialWarningModal.vue'
@@ -7,6 +7,7 @@ import SerialGroupCard from '@/components/SerialGroupCard.vue'
 import UiSwitch from '@/components/UiSwitch.vue'
 import {
   createComplexSerialBatch,
+  createImportCsvBatch,
   createImportSerialBatch,
   createSerialBatch,
   deleteSerialGroup,
@@ -21,12 +22,14 @@ const SERIAL_CATEGORY_OPTIONS: { value: SerialGroupCategory; label: string }[] =
   { value: 'seller_to_end_user', label: 'فروشنده به مشتری نهایی' },
 ]
 
-type GenerationTab = 'range' | 'complex' | 'import'
+type GenerationTab = 'range' | 'complex' | 'import' | 'csv'
 
 /** Must match SerialGenerator.LARGE_BATCH_THRESHOLD on the Android gateway. */
 const MAX_SERIAL_BATCH = 500_000
+/** Must match SerialStateCsv.MAX_ROWS on the Android gateway. */
+const MAX_CSV_STATE_ROWS = 750_000
 
-const activeTab = ref<GenerationTab>('range')
+const activeTab = ref<GenerationTab>('complex')
 
 const prefix = ref('M')
 const start = ref(100)
@@ -45,6 +48,8 @@ const result = ref('')
 const complexCount = ref(100)
 const letterCount = ref(3)
 const digitCount = ref(7)
+const complexFixedPositions = ref(false)
+const complexPattern = ref('CCCDDDDDDD')
 const complexUsePrefix = ref(false)
 const complexPrefix = ref('')
 const complexDescription = ref('')
@@ -72,6 +77,18 @@ const importLoading = ref(false)
 const importError = ref('')
 const importResult = ref('')
 
+const csvFile = ref<File | null>(null)
+const csvFileName = ref('')
+const csvDescription = ref('')
+const csvScore = ref(1)
+const csvCategory = ref<SerialGroupCategory>('end_user_client')
+const csvWarrantyMonths = ref<number | ''>(6)
+const csvWarrantyKm = ref<number | ''>('')
+const csvImageVerificationRequired = ref(false)
+const csvLoading = ref(false)
+const csvError = ref('')
+const csvResult = ref('')
+
 const groups = ref<SerialGroup[]>([])
 const groupsLoading = ref(false)
 const groupsError = ref('')
@@ -89,6 +106,99 @@ const count = computed(() => {
 
 const complexLength = computed(() => letterCount.value + digitCount.value)
 
+function buildDefaultPattern(letters: number, digits: number): string {
+  return 'C'.repeat(Math.max(0, letters)) + 'D'.repeat(Math.max(0, digits))
+}
+
+function syncComplexPatternToCounts() {
+  const targetLen = complexLength.value
+  let pattern = complexPattern.value.toUpperCase().replace(/[^CD]/g, '')
+  if (pattern.length > targetLen) {
+    pattern = pattern.slice(0, targetLen)
+  } else if (pattern.length < targetLen) {
+    pattern += buildDefaultPattern(letterCount.value, digitCount.value).slice(pattern.length)
+  }
+  const lettersInPattern = (pattern.match(/C/g) || []).length
+  const digitsInPattern = (pattern.match(/D/g) || []).length
+  if (lettersInPattern !== letterCount.value || digitsInPattern !== digitCount.value) {
+    pattern = buildDefaultPattern(letterCount.value, digitCount.value)
+  }
+  complexPattern.value = pattern
+}
+
+watch([letterCount, digitCount], () => {
+  if (complexFixedPositions.value) {
+    syncComplexPatternToCounts()
+  }
+})
+
+watch(complexFixedPositions, (fixed) => {
+  if (fixed) {
+    syncComplexPatternToCounts()
+  }
+})
+
+const complexPatternSlots = computed(() => complexPattern.value.split('') as ('C' | 'D')[])
+
+const complexPatternValid = computed(() => {
+  if (!complexFixedPositions.value) return true
+  const pattern = complexPattern.value
+  if (!/^[CD]+$/.test(pattern)) return false
+  if (pattern.length !== complexLength.value) return false
+  const lettersInPattern = (pattern.match(/C/g) || []).length
+  const digitsInPattern = (pattern.match(/D/g) || []).length
+  return lettersInPattern === letterCount.value && digitsInPattern === digitCount.value
+})
+
+function togglePatternSlot(index: number) {
+  const slots = complexPattern.value.split('')
+  const current = slots[index]
+  if (!current) return
+  slots[index] = current === 'C' ? 'D' : 'C'
+  complexPattern.value = slots.join('')
+}
+
+function setPatternPreset(preset: 'letters-first' | 'digits-first' | 'alternate') {
+  const letters = letterCount.value
+  const digits = digitCount.value
+  if (preset === 'letters-first') {
+    complexPattern.value = buildDefaultPattern(letters, digits)
+    return
+  }
+  if (preset === 'digits-first') {
+    complexPattern.value = buildDefaultPattern(digits, letters).replace(/C/g, 'X').replace(/D/g, 'C').replace(/X/g, 'D')
+    return
+  }
+  const slots: string[] = []
+  let remainingLetters = letters
+  let remainingDigits = digits
+  while (remainingLetters > 0 || remainingDigits > 0) {
+    if (remainingLetters > 0) {
+      slots.push('C')
+      remainingLetters--
+    }
+    if (remainingDigits > 0) {
+      slots.push('D')
+      remainingDigits--
+    }
+  }
+  complexPattern.value = slots.join('')
+}
+
+function applyTypoSafePreset() {
+  letterCount.value = 1
+  digitCount.value = 7
+  complexFixedPositions.value = true
+  complexPattern.value = buildDefaultPattern(1, 7)
+  complexUsePrefix.value = false
+  complexPrefix.value = ''
+}
+
+function goToTypoSafeComplex() {
+  activeTab.value = 'complex'
+  applyTypoSafePreset()
+}
+
 const complexNormalizedPrefix = computed(() => {
   if (!complexUsePrefix.value) return ''
   return complexPrefix.value.trim().toUpperCase().replace(/[^A-Z0-9]/g, '')
@@ -103,17 +213,31 @@ const complexExample = computed(() => {
   const digits = '23456789'
   const bodyLen = Math.max(0, complexLength.value)
   const showLen = Math.min(bodyLen, 14)
-  const letterSlots = Math.min(letterCount.value, showLen)
-  const digitSlots = showLen - letterSlots
   const body: string[] = []
-  for (let i = 0; i < letterSlots; i++) body.push(letters[i % letters.length]!)
-  for (let i = 0; i < digitSlots; i++) body.push(digits[i % digits.length]!)
-  // Shuffle lightly so preview looks mixed (deterministic)
-  for (let i = body.length - 1; i > 0; i--) {
-    const j = (i * 3 + 1) % (i + 1)
-    const tmp = body[i]!
-    body[i] = body[j]!
-    body[j] = tmp
+  if (complexFixedPositions.value && complexPattern.value.length > 0) {
+    const pattern = complexPattern.value.slice(0, showLen)
+    let letterIdx = 0
+    let digitIdx = 0
+    for (const slot of pattern) {
+      if (slot === 'C') {
+        body.push(letters[letterIdx % letters.length]!)
+        letterIdx++
+      } else if (slot === 'D') {
+        body.push(digits[digitIdx % digits.length]!)
+        digitIdx++
+      }
+    }
+  } else {
+    const letterSlots = Math.min(letterCount.value, showLen)
+    const digitSlots = showLen - letterSlots
+    for (let i = 0; i < letterSlots; i++) body.push(letters[i % letters.length]!)
+    for (let i = 0; i < digitSlots; i++) body.push(digits[i % digits.length]!)
+    for (let i = body.length - 1; i > 0; i--) {
+      const j = (i * 3 + 1) % (i + 1)
+      const tmp = body[i]!
+      body[i] = body[j]!
+      body[j] = tmp
+    }
   }
   const sample = complexNormalizedPrefix.value + body.join('')
   return bodyLen > showLen ? `${sample}…` : sample
@@ -137,6 +261,7 @@ const complexValid = computed(() => {
     complexLength.value <= 32 &&
     complexTotalLength.value <= 32 &&
     complexPrefixValid.value &&
+    complexPatternValid.value &&
     complexScore.value >= 1 &&
     hasWarranty(complexWarrantyMonths.value, complexWarrantyKm.value)
   )
@@ -148,6 +273,15 @@ const importValid = computed(() => {
     importScore.value >= 1 &&
     !importParsing.value &&
     hasWarranty(importWarrantyMonths.value, importWarrantyKm.value)
+  )
+})
+
+const csvImportValid = computed(() => {
+  return (
+    csvFile.value != null &&
+    csvScore.value >= 1 &&
+    !csvLoading.value &&
+    hasWarranty(csvWarrantyMonths.value, csvWarrantyKm.value)
   )
 })
 
@@ -268,12 +402,17 @@ async function submitComplex() {
     complexError.value = 'حداقل یکی از مدت گارانتی (ماه) یا کیلومتر گارانتی را وارد کنید'
     return
   }
+  if (complexFixedPositions.value && !complexPatternValid.value) {
+    complexError.value = 'الگوی موقعیت حروف و ارقام با تعداد واردشده هم‌خوان نیست'
+    return
+  }
   complexLoading.value = true
   try {
     const response = await createComplexSerialBatch({
       count: complexCount.value,
       letterCount: letterCount.value,
       digitCount: digitCount.value,
+      pattern: complexFixedPositions.value ? complexPattern.value : undefined,
       prefix: complexNormalizedPrefix.value || undefined,
       description: complexDescription.value || undefined,
       score: complexScore.value,
@@ -298,6 +437,13 @@ function clearImportFile() {
   importEmptyRows.value = 0
   importError.value = ''
   importResult.value = ''
+}
+
+function clearCsvFile() {
+  csvFile.value = null
+  csvFileName.value = ''
+  csvError.value = ''
+  csvResult.value = ''
 }
 
 async function onImportFileChange(event: Event) {
@@ -328,19 +474,29 @@ async function onImportFileChange(event: Event) {
   }
 }
 
+function onCsvFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  csvResult.value = ''
+  csvError.value = ''
+  if (!file) {
+    clearCsvFile()
+    return
+  }
+  csvFile.value = file
+  csvFileName.value = file.name
+  input.value = ''
+}
+
 async function submitImport() {
   importError.value = ''
   importResult.value = ''
-  if (importSerials.value.length === 0) {
-    importError.value = 'ابتدا فایل اکسل را انتخاب کنید'
-    return
-  }
-  if (importScore.value < 1) {
-    importError.value = 'امتیاز باید حداقل ۱ باشد'
-    return
-  }
   if (!hasWarranty(importWarrantyMonths.value, importWarrantyKm.value)) {
-    importError.value = 'حداقل یکی از مدت گارانتی (ماه) یا کیلومتر گارانتی را وارد کنید'
+    importError.value = 'حداقل یکی از مدت گارانتی یا کیلومتر گارانتی الزامی است'
+    return
+  }
+  if (importSerials.value.length === 0) {
+    importError.value = 'فایل معتبری انتخاب نشده است'
     return
   }
   importLoading.value = true
@@ -357,9 +513,44 @@ async function submitImport() {
       `ثبت: ${response.inserted} • رد شده (تکراری): ${response.skipped} • خوانده‌شده: ${response.total}`
     await loadGroups()
   } catch (e) {
-    importError.value = e instanceof Error ? e.message : 'خطا در ورود سریال‌ها'
+    importError.value = e instanceof Error ? e.message : 'خطا'
   } finally {
     importLoading.value = false
+  }
+}
+
+async function submitCsvImport() {
+  csvError.value = ''
+  csvResult.value = ''
+  if (!hasWarranty(csvWarrantyMonths.value, csvWarrantyKm.value)) {
+    csvError.value = 'حداقل یکی از مدت گارانتی یا کیلومتر گارانتی الزامی است'
+    return
+  }
+  const file = csvFile.value
+  if (!file) {
+    csvError.value = 'ابتدا یک فایل CSV انتخاب کنید'
+    return
+  }
+  csvLoading.value = true
+  try {
+    const response = await createImportCsvBatch(file, {
+      description: csvDescription.value || undefined,
+      score: csvScore.value,
+      category: csvCategory.value,
+      imageVerificationRequired: csvImageVerificationRequired.value,
+      ...warrantyPayload(csvWarrantyMonths.value, csvWarrantyKm.value),
+    })
+    const summary =
+      `ثبت: ${response.inserted} • تکراری: ${response.skipped}` +
+      ` • ثبت‌شده: ${response.usedInserted ?? 0} • استفاده‌نشده: ${response.unusedInserted ?? 0}` +
+      (response.invalidCount ? ` • نامعتبر: ${response.invalidCount}` : '')
+    clearCsvFile()
+    csvResult.value = summary
+    await loadGroups()
+  } catch (e) {
+    csvError.value = e instanceof Error ? e.message : 'خطا'
+  } finally {
+    csvLoading.value = false
   }
 }
 
@@ -403,17 +594,10 @@ onMounted(() => {
         <div class="generation-tabs">
           <button
             type="button"
-            :class="['tab', { active: activeTab === 'range' }]"
-            @click="activeTab = 'range'"
-          >
-            تولید بازه‌ای
-          </button>
-          <button
-            type="button"
             :class="['tab', { active: activeTab === 'complex' }]"
             @click="activeTab = 'complex'"
           >
-            تولید پیچیده (تصادفی)
+            تصادفی (پیشنهادی)
           </button>
           <button
             type="button"
@@ -422,9 +606,43 @@ onMounted(() => {
           >
             ورود از اکسل
           </button>
+          <button
+            type="button"
+            :class="['tab', { active: activeTab === 'csv' }]"
+            @click="activeTab = 'csv'"
+          >
+            ورود CSV پایگاه
+          </button>
+          <button
+            type="button"
+            :class="['tab', { active: activeTab === 'range' }]"
+            @click="activeTab = 'range'"
+          >
+            محدوده عددی (پیشرفته)
+          </button>
         </div>
 
         <template v-if="activeTab === 'range'">
+          <div class="serial-warning-panel">
+            <p class="serial-warning-title">هشدار: سریال‌های پشت‌سرهم مستعد اشتباه تایپی هستند</p>
+            <p class="hint">
+              در حالت بازه‌ای، سریال‌ها پشت‌سرهم ساخته می‌شوند؛ مثلاً
+              <code dir="ltr">F4003</code>
+              و
+              <code dir="ltr">F4004</code>.
+              اگر مشتری یک رقم را اشتباه وارد کند، ممکن است سریال
+              <strong>دیگری معتبر</strong>
+              ثبت شود.
+            </p>
+            <p class="hint">
+              برای سریال‌های گارانتی مشتری، حالت
+              <strong>تصادفی</strong>
+              توصیه می‌شود — با یک اشتباه تایپی معمولاً سریال پیدا نمی‌شود.
+            </p>
+            <button type="button" class="primary" @click="goToTypoSafeComplex">
+              رفتن به سریال تصادفی امن
+            </button>
+          </div>
           <p class="hint">پیشوند و بازه عددی را وارد کنید. مثال: M از 100 تا 900000</p>
           <div class="form-grid">
             <label>
@@ -489,14 +707,47 @@ onMounted(() => {
         </template>
 
         <template v-else-if="activeTab === 'complex'">
+          <div class="typo-safe-preset-card">
+            <p class="typo-safe-preset-title">سریال ضد اشتباه تایپی (پیشنهادی)</p>
+            <p class="hint">
+              یک حرف تصادفی + ۷ رقم تصادفی با الگوی ثابت — مثل
+              <code dir="ltr">K2345678</code>.
+              برخلاف سریال‌های پشت‌سرهم مثل
+              <code dir="ltr">F4003</code>
+              /
+              <code dir="ltr">F4004</code>،
+              با یک اشتباه تایپی معمولاً سریال دیگری ثبت نمی‌شود.
+            </p>
+            <button type="button" class="primary" @click="applyTypoSafePreset">
+              اعمال الگوی امن (۱ حرف + ۷ رقم)
+            </button>
+          </div>
           <div class="import-guide">
             <p class="hint">
               در این حالت، بخش اصلی سریال به‌صورت
               <strong>تصادفی و غیرقابل حدس</strong>
-              از ترکیب حروف و ارقام ساخته می‌شود. موقعیت حروف در بخش تصادفی هر بار جابه‌جا
-              می‌شود تا الگوی ثابتی نداشته باشد.
+              ساخته می‌شود — برخلاف بازه عددی پشت‌سرهم، اشتباه تایپی معمولاً به سریال
+              معتبر دیگری منجر نمی‌شود.
             </p>
             <ul class="import-guide-list">
+              <li>
+                ارقام
+                <code dir="ltr">0</code>
+                و
+                <code dir="ltr">1</code>
+                و حروف
+                <code dir="ltr">I</code>
+                /
+                <code dir="ltr">O</code>
+                در تولید استفاده نمی‌شوند تا خواندن و تایپ راحت‌تر باشد.
+              </li>
+              <li>
+                می‌توانید موقعیت حروف و ارقام را
+                <strong>ثابت</strong>
+                (مثلاً یک حرف در ابتدا و بقیه رقم) یا
+                <strong>تصادفی</strong>
+                تنظیم کنید.
+              </li>
               <li>
                 <strong>بدون پیشوند:</strong>
                 کل سریال فقط همان بخش تصادفی است؛ مثلاً
@@ -506,21 +757,13 @@ onMounted(() => {
                 <strong>با پیشوند ثابت:</strong>
                 یک متن ثابت (مثل
                 <code dir="ltr">G</code>
-                یا
-                <code dir="ltr">PR</code>
-                ) در
-                <em>ابتدای همه سریال‌ها</em>
-                می‌آید و بعد از آن بخش تصادفی قرار می‌گیرد؛ مثلاً
+                ) در ابتدای همه سریال‌ها می‌آید؛ مثلاً
                 <code dir="ltr">G7K2M9P4</code>
-              </li>
-              <li>
-                پیشوند فقط حروف انگلیسی و رقم است و برای همه سریال‌های این گروه یکسان
-                می‌ماند.
               </li>
               <li>
                 تعداد حروف و ارقام مربوط به
                 <strong>بخش تصادفی</strong>
-                است (بدون احتساب پیشوند) و باید بین ۶ تا ۳۲ باشد.
+                است و باید بین ۶ تا ۳۲ باشد.
               </li>
               <li>
                 طول نهایی سریال (پیشوند + بخش تصادفی) حداکثر ۳۲ کاراکتر است.
@@ -570,6 +813,53 @@ onMounted(() => {
               تعداد ارقام (بخش تصادفی)
               <input v-model.number="digitCount" type="number" min="0" max="32" />
             </label>
+            <div
+              class="feature-toggle-panel full-width"
+              :class="{ on: complexFixedPositions }"
+            >
+              <UiSwitch
+                v-model="complexFixedPositions"
+                label="موقعیت ثابت حروف و ارقام"
+                description="اگر روشن باشد، جای هر حرف و رقم در بخش تصادفی طبق الگویی که مشخص می‌کنید ثابت می‌ماند (مثلاً CDDDDDDD = یک حرف و سپس ارقام)."
+              />
+            </div>
+            <div v-if="complexFixedPositions" class="full-width pattern-editor">
+              <p class="field-hint">
+                روی هر خانه کلیک کنید تا بین
+                <strong>حرف (C)</strong>
+                و
+                <strong>رقم (D)</strong>
+                جابه‌جا شود.
+              </p>
+              <div class="pattern-presets">
+                <button type="button" class="secondary small" @click="setPatternPreset('letters-first')">
+                  حروف اول
+                </button>
+                <button type="button" class="secondary small" @click="setPatternPreset('digits-first')">
+                  ارقام اول
+                </button>
+                <button type="button" class="secondary small" @click="setPatternPreset('alternate')">
+                  یکی‌درمیان
+                </button>
+              </div>
+              <div class="pattern-slots" dir="ltr">
+                <button
+                  v-for="(slot, index) in complexPatternSlots"
+                  :key="index"
+                  type="button"
+                  class="pattern-slot"
+                  :class="slot === 'C' ? 'letter' : 'digit'"
+                  :title="slot === 'C' ? 'حرف — کلیک برای رقم' : 'رقم — کلیک برای حرف'"
+                  @click="togglePatternSlot(index)"
+                >
+                  {{ slot }}
+                </button>
+              </div>
+              <p class="field-hint">
+                الگو:
+                <code dir="ltr">{{ complexPattern }}</code>
+              </p>
+            </div>
             <label>
               امتیاز قرعه‌کشی
               <input v-model.number="complexScore" type="number" min="1" />
@@ -631,7 +921,13 @@ onMounted(() => {
               <template v-else-if="complexUsePrefix"> پیشوند: (وارد نشده) • </template>
               <template v-else> پیشوند: ندارد • </template>
               بخش تصادفی: {{ complexLength }} کاراکتر ({{ letterCount }} حرف +
-              {{ digitCount }} رقم) • طول نهایی: {{ complexTotalLength }}
+              {{ digitCount }} رقم)
+              <template v-if="complexFixedPositions">
+                • موقعیت:
+                <code dir="ltr">{{ complexPattern }}</code>
+              </template>
+              <template v-else> • موقعیت: تصادفی </template>
+              • طول نهایی: {{ complexTotalLength }}
             </p>
             <p v-if="complexLength > 0" class="hint complex-example">
               نمونه شکل سریال:
@@ -652,7 +948,7 @@ onMounted(() => {
           </button>
         </template>
 
-        <template v-else>
+        <template v-else-if="activeTab === 'import'">
           <div class="import-guide">
             <p class="hint">
               فایل اکسل (.xlsx / .xls / .csv) را انتخاب کنید. فقط
@@ -754,6 +1050,129 @@ onMounted(() => {
               class="secondary"
               :disabled="importLoading || (!importFileName && importSerials.length === 0)"
               @click="clearImportFile"
+            >
+              پاک کردن فایل
+            </button>
+          </div>
+        </template>
+
+        <template v-else-if="activeTab === 'csv'">
+          <div class="import-guide">
+            <p class="hint">
+              فایل CSV با سرستون‌های نام‌دار را انتخاب کنید. فایل مستقیم به پایگاه محلی گیت‌وی (شبکه
+              هات‌اسپات) ارسال می‌شود — یک فایل = یک گروه. بعداً می‌توانید امتیاز، گارانتی و تأیید عکس را
+              روی کارت گروه ویرایش کنید.
+            </p>
+            <ul class="import-guide-list">
+              <li>
+                ستون الزامی:
+                <code dir="ltr">serial</code>
+              </li>
+              <li>
+                اختیاری:
+                <code dir="ltr">phone</code>
+                ،
+                <code dir="ltr">date</code>
+                /
+                <code dir="ltr">date_jalali</code>
+                ،
+                <code dir="ltr">time</code>
+                (میلادی اگر جلالی خالی باشد)،
+                <code dir="ltr">city</code>
+                ،
+                <code dir="ltr">km</code>
+              </li>
+              <li>
+                بدون تلفن یا phone=0 → استفاده‌نشده؛ تلفن واقعی → ثبت‌شده. تاریخ جلالی ترجیح داده
+                می‌شود؛ در غیر این صورت
+                <code dir="ltr">time</code>
+                میلادی به جلالی تبدیل می‌شود.
+              </li>
+              <li>حداکثر {{ MAX_CSV_STATE_ROWS.toLocaleString('fa-IR') }} ردیف در هر ورود.</li>
+            </ul>
+            <p class="hint" dir="ltr">
+              serial,phone,date,city,km<br />
+              ABC1001,,,,<br />
+              ABC1002,09121234567,1403/04/15 10:22:00,Tehran,45000
+            </p>
+          </div>
+          <div class="form-grid">
+            <label class="full-width">
+              فایل CSV
+              <input
+                type="file"
+                accept=".csv,text/csv"
+                :disabled="csvLoading"
+                @change="onCsvFileChange"
+              />
+            </label>
+            <label>
+              امتیاز قرعه‌کشی
+              <input v-model.number="csvScore" type="number" min="1" />
+            </label>
+            <label>
+              دسته سریال
+              <select v-model="csvCategory">
+                <option
+                  v-for="option in SERIAL_CATEGORY_OPTIONS"
+                  :key="option.value"
+                  :value="option.value"
+                >
+                  {{ option.label }}
+                </option>
+              </select>
+            </label>
+            <label>
+              مدت گارانتی (ماه)
+              <input
+                v-model.number="csvWarrantyMonths"
+                type="number"
+                min="0"
+                placeholder="مثال: 6"
+              />
+            </label>
+            <label>
+              گارانتی کیلومتر
+              <input
+                v-model.number="csvWarrantyKm"
+                type="number"
+                min="0"
+                placeholder="مثال: 60000"
+              />
+            </label>
+            <div
+              class="feature-toggle-panel full-width"
+              :class="{ on: csvImageVerificationRequired }"
+            >
+              <UiSwitch
+                v-model="csvImageVerificationRequired"
+                label="تأیید عکس محصول"
+                description="پس از ثبت سریال، مشتری باید عکس محصول را بفرستد تا امتیاز قرعه‌کشی پس از تأیید ادمین اعطا شود."
+              />
+            </div>
+            <label class="full-width">
+              توضیحات گروه (اختیاری)
+              <textarea v-model="csvDescription" rows="2" />
+            </label>
+          </div>
+          <p class="hint">حداقل یکی از مدت گارانتی یا کیلومتر گارانتی الزامی است.</p>
+          <p v-if="csvFileName" class="hint">فایل: {{ csvFileName }} (آپلود مستقیم به گیت‌وی)</p>
+          <p v-if="csvError" class="error">{{ csvError }}</p>
+          <p v-if="csvResult" class="success">{{ csvResult }}</p>
+          <div class="group-card-actions">
+            <button
+              type="button"
+              class="primary"
+              :disabled="csvLoading || !csvImportValid"
+              @click="submitCsvImport"
+            >
+              {{ csvLoading ? 'در حال ورود...' : 'ورود CSV' }}
+            </button>
+            <button
+              type="button"
+              class="secondary"
+              :disabled="csvLoading || !csvFileName"
+              @click="clearCsvFile"
             >
               پاک کردن فایل
             </button>

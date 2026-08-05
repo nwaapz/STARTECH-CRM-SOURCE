@@ -133,6 +133,45 @@ object JalaliHelper {
     fun isDateOnly(value: String): Boolean =
         dateOnlyPattern.matches(PhoneUtils.normalizeToAsciiDigits(value.trim()))
 
+    /**
+     * Parses a CSV/DB registration timestamp into local stored form
+     * (`YYYY/MM/DD HH:mm:ss` Jalali, Latin digits).
+     *
+     * Accepts Jalali (`1403/04/15…`) or Gregorian MySQL-style (`2025-12-21…`);
+     * Gregorian is converted via [gregorianToJalali]. Returns null for empty / zero dates.
+     */
+    fun parseToStoredJalaliDateTime(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val latin = PhoneUtils.normalizeToAsciiDigits(raw.trim())
+        if (latin.isEmpty()) return null
+        if (latin.startsWith("0000-00-00") || latin == "0") return null
+
+        val match = DATE_TIME_PATTERN.matchEntire(latin) ?: return null
+        val year = match.groupValues[1].toInt()
+        val month = match.groupValues[2].toInt()
+        val day = match.groupValues[3].toInt()
+        if (month !in 1..12 || day !in 1..31) return null
+
+        val hour = match.groupValues[4].toIntOrNull() ?: 0
+        val minute = match.groupValues[5].toIntOrNull() ?: 0
+        val second = match.groupValues[6].toIntOrNull() ?: 0
+
+        val usesDash = latin.contains('-')
+        val isGregorian = year >= 1700 || (usesDash && year !in 1200..1599)
+        val (jy, jm, jd) = if (isGregorian) {
+            gregorianToJalali(year, month, day)
+        } else {
+            Triple(year, month, day)
+        }
+
+        val datePart = formatJalaliDate(jy, jm, jd)
+        return String.format(Locale.US, "%s %02d:%02d:%02d", datePart, hour, minute, second)
+    }
+
+    private val DATE_TIME_PATTERN = Regex(
+        """^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:[ T](\d{1,2}):(\d{1,2})(?::(\d{1,2}))?)?$""",
+    )
+
     /** Days in Jalali month (month 1–12). Esfand leap approx via algorithm. */
     fun jalaliDaysInMonth(year: Int, month: Int): Int {
         return when {

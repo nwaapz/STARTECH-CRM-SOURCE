@@ -2,6 +2,8 @@ import type {
   BatchRequest,
   ComplexBatchRequest,
   ImportBatchRequest,
+  ImportCsvMeta,
+  ImportCsvResponse,
   BatchResponse,
   CommunicationListResponse,
   CommunicationThreadResponse,
@@ -205,6 +207,25 @@ export function createImportSerialBatch(body: ImportBatchRequest): Promise<Batch
   return request<BatchResponse>('/api/serials/import-batch', {
     method: 'POST',
     body: JSON.stringify(body),
+  })
+}
+
+/** Multipart CSV with registration state — LAN gateway / local DB only. */
+export function createImportCsvBatch(
+  file: File,
+  meta: ImportCsvMeta,
+): Promise<ImportCsvResponse> {
+  const form = new FormData()
+  form.append('file', file)
+  if (meta.description) form.append('description', meta.description)
+  form.append('score', String(meta.score ?? 1))
+  form.append('category', meta.category ?? 'end_user_client')
+  if (meta.warrantyMonths != null) form.append('warrantyMonths', String(meta.warrantyMonths))
+  if (meta.warrantyKm != null) form.append('warrantyKm', String(meta.warrantyKm))
+  form.append('imageVerificationRequired', meta.imageVerificationRequired ? 'true' : 'false')
+  return request<ImportCsvResponse>('/api/serials/import-csv', {
+    method: 'POST',
+    body: form,
   })
 }
 
@@ -824,6 +845,13 @@ export interface CloudSyncStatus {
   pendingOutbox: number
   lastPushMs: number
   lastPullMs: number
+  running?: boolean
+  /** idle | fetch | push | apply | conflicts | done | error */
+  phase?: string
+  percent?: number
+  detail?: string | null
+  conflictCount?: number
+  pendingRemote?: number
 }
 
 export interface DayCount {
@@ -912,8 +940,23 @@ export function putCloudSyncConfig(body: {
   return request('/api/admin/sync-config', { method: 'PUT', body: JSON.stringify(body) })
 }
 
-export function runCloudSyncNow(): Promise<{ ok: boolean; message?: string }> {
-  return request('/api/admin/sync-now', { method: 'POST', body: '{}' })
+/** "Get from server" button: backfill + pull. Applies/acks remote changes, never pushes. */
+export function runCloudSyncGet(): Promise<{ ok: boolean; message?: string }> {
+  return request('/api/admin/cloud-sync/get', { method: 'POST', body: '{}' })
+}
+
+/** "Send to server" button: upload-only push of the local outbox. */
+export function runCloudSyncSend(): Promise<{ ok: boolean; message?: string }> {
+  return request('/api/admin/cloud-sync/send', { method: 'POST', body: '{}' })
+}
+
+/**
+ * Silent, cheap pull (no backfill) fired once per page load. Callers should swallow
+ * any error — if the server isn't reachable the change just stays pending until the
+ * user taps "Get from server".
+ */
+export function triggerCloudAutoPull(): Promise<{ ok: boolean; message?: string }> {
+  return request('/api/admin/cloud-sync/pull', { method: 'POST', body: '{}' })
 }
 
 export function fetchRegistrationsByDay(params: {
