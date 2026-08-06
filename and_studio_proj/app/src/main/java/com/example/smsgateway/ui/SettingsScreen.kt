@@ -541,6 +541,8 @@ fun SettingsScreen(
 
         BackupSettingsCard(settingsStore = settingsStore)
 
+        SettingsProfileCard(settingsStore = settingsStore)
+
         if (verificationMode == VerificationMode.INTERNAL) {
             SmsProcessingSettingsCard(settingsStore = settingsStore)
 

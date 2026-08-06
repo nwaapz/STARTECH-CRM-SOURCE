@@ -695,6 +695,21 @@ function crm_handle_settings_routes(mysqli $conn, string $method, string $path):
         json_out(['ok' => true, 'message' => 'Sync is not available on the remote panel']);
     }
 
+    if ($path === '/sms-processing/debug-log' && $method === 'GET') {
+        json_out([
+            'count' => 0,
+            'entries' => [],
+            'text' => 'SMS processing debug log is only available on the LAN CRM (phone app).',
+        ]);
+    }
+    if ($path === '/sms-processing/debug-log/clear' && $method === 'POST') {
+        json_out([
+            'count' => 0,
+            'entries' => [],
+            'text' => 'SMS processing debug log is only available on the LAN CRM (phone app).',
+        ]);
+    }
+
     return false;
 }
 

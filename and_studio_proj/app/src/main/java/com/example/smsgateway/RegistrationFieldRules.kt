@@ -31,6 +31,14 @@ object RegistrationFieldRules {
         return city?.takeIf { it.isNotBlank() } ?: knownCity?.takeIf { it.isNotBlank() }
     }
 
+    /**
+     * KM already stored on an incomplete row. `0` is treated as unset — unused inventory /
+     * CSV imports often leave `km=0`, which must not skip the KM prompt or finish Mode 2/3
+     * after city-only follow-up. A km freshly parsed from the customer's SMS should be passed
+     * through without this filter (including an explicit `0`).
+     */
+    fun storedKm(km: Int?): Int? = km?.takeUnless { it == 0 }
+
     fun missingFields(
         city: String?,
         km: Int?,

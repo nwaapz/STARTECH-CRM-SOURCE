@@ -198,6 +198,25 @@ class SettingsStore(context: Context) {
             .apply()
     }
 
+    /** Raw snapshot of every stored setting (SharedPreferences only supports these 5 types). */
+    fun exportSnapshot(): Map<String, Any?> = prefs.all
+
+    /** Fully replaces current settings with [values] (clear then write, not a merge). */
+    fun importSnapshot(values: Map<String, Any?>) {
+        val editor = prefs.edit().clear()
+        values.forEach { (key, value) ->
+            when (value) {
+                is Boolean -> editor.putBoolean(key, value)
+                is Int -> editor.putInt(key, value)
+                is Long -> editor.putLong(key, value)
+                is Float -> editor.putFloat(key, value)
+                is String -> editor.putString(key, value)
+                is Set<*> -> editor.putStringSet(key, value.filterIsInstance<String>().toSet())
+            }
+        }
+        editor.apply()
+    }
+
     private fun ensureLanPin(): String {
         val existing = prefs.getString(KEY_LAN_PIN, null)
         if (!existing.isNullOrBlank()) return existing

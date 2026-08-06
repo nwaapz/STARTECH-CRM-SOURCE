@@ -23,6 +23,7 @@ import type {
   SerialRow,
   UpdateSerialRowRequest,
   SmsProcessingSettings,
+  SmsProcessingDebugLogResponse,
   SmsMessagesSettings,
   SimQuotaSettings,
   SyncResponse,
@@ -331,6 +332,21 @@ export function updateSmsProcessingSettings(
     method: 'PUT',
     body: JSON.stringify(body),
   })
+}
+
+export function fetchSmsProcessingDebugLog(params: {
+  limit?: number
+  phone?: string
+} = {}): Promise<SmsProcessingDebugLogResponse> {
+  const q = new URLSearchParams()
+  if (params.limit != null) q.set('limit', String(params.limit))
+  if (params.phone) q.set('phone', params.phone)
+  const qs = q.toString()
+  return request(`/api/sms-processing/debug-log${qs ? `?${qs}` : ''}`)
+}
+
+export function clearSmsProcessingDebugLog(): Promise<SmsProcessingDebugLogResponse> {
+  return request('/api/sms-processing/debug-log/clear', { method: 'POST' })
 }
 
 export function fetchSimQuotaSettings(): Promise<SimQuotaSettings> {

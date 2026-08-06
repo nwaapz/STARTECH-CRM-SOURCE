@@ -101,6 +101,41 @@ object SmsPatternParser {
         )
     }
 
+    data class RemainingFields(
+        val city: String?,
+        val km: Int?,
+    )
+
+    /**
+     * Best-effort extraction of whichever of city/km are still missing from a follow-up
+     * SMS (typically the serial has already been stripped out by the caller). Tries
+     * [parseCityKmAuto] first when both are missing (handles "Tehran 12000" in one go),
+     * then falls back to single-field parsing per remaining field — this covers a
+     * customer answering city and km in two separate messages.
+     */
+    fun extractRemainingFields(text: String, needsCity: Boolean, needsKm: Boolean): RemainingFields {
+        if (!needsCity && !needsKm) return RemainingFields(city = null, km = null)
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return RemainingFields(city = null, km = null)
+
+        if (needsCity && needsKm) {
+            parseCityKmAuto(trimmed).fields?.let {
+                return RemainingFields(city = it.city, km = it.km)
+            }
+        }
+
+        // parseSingleField(CITY) does not itself validate the text looks like a city name
+        // (it just returns the trimmed input) — guard here so a pure-digit follow-up meant
+        // as km is never misread as the city too.
+        val city = if (needsCity) {
+            parseSingleField(trimmed, SmsField.CITY)?.city?.takeIf { isValidCityName(it) }
+        } else {
+            null
+        }
+        val km = if (needsKm) parseSingleField(trimmed, SmsField.KM)?.km else null
+        return RemainingFields(city = city, km = km)
+    }
+
     private suspend fun parseAutoCombined(
         message: String,
         separator: Char,

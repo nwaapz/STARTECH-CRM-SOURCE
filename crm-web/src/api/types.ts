@@ -270,6 +270,22 @@ export interface SmsProcessingSettings {
   sessionTimeoutMinutes: number
 }
 
+export interface SmsProcessingDebugLogEntry {
+  id: number
+  timestamp: string
+  correlationId: string
+  phone: string
+  mode: string
+  message: string
+  line: string
+}
+
+export interface SmsProcessingDebugLogResponse {
+  count: number
+  entries: SmsProcessingDebugLogEntry[]
+  text: string
+}
+
 export interface SmsMessagePlaceholderHint {
   token: string
   labelFa: string

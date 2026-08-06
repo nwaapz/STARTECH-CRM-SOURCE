@@ -106,6 +106,13 @@ object JalaliHelper {
         return prefix <= cutoff
     }
 
+    /** True when [storedDate]'s calendar day equals [exactDate] (both Jalali YYYY/MM/DD). */
+    fun isJalaliDateEqual(storedDate: String?, exactDate: String): Boolean {
+        val prefix = datePrefixForCompare(storedDate) ?: return false
+        val day = datePrefixForCompare(exactDate) ?: exactDate
+        return prefix == day
+    }
+
     /**
      * Normalizes registration timestamps to Latin digits (and date-only → start of day).
      * Safe to call on values that are already Latin.

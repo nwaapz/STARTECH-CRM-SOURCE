@@ -77,6 +77,10 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
     var showConfirmDialog by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<SerialGenerator.GroupSummary?>(null) }
     var duplicateException by remember { mutableStateOf<SerialGenerator.DuplicateSerialException?>(null) }
+    var showOrphanClearDialog by remember { mutableStateOf(false) }
+    var orphanPreview by remember { mutableStateOf<SerialGenerator.OrphanCleanupPreview?>(null) }
+    var orphanClearing by remember { mutableStateOf(false) }
+    var orphanResultMessage by remember { mutableStateOf<String?>(null) }
 
     var csvUri by remember { mutableStateOf<Uri?>(null) }
     var csvFileName by remember { mutableStateOf<String?>(null) }
@@ -365,7 +369,67 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
         )
     }
 
-    val busy = isGenerating || csvImporting || csvParsing
+    if (showOrphanClearDialog) {
+        val preview = orphanPreview
+        AlertDialog(
+            onDismissRequest = {
+                if (!orphanClearing) {
+                    showOrphanClearDialog = false
+                    orphanPreview = null
+                }
+            },
+            title = { Text(stringResource(R.string.serial_orphan_clear_title)) },
+            text = {
+                if (preview == null) {
+                    Text(stringResource(R.string.serial_orphan_clear_working))
+                } else {
+                    Text(
+                        stringResource(
+                            R.string.serial_orphan_clear_message,
+                            preview.total,
+                            preview.registered,
+                        ),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (preview == null || orphanClearing) return@TextButton
+                        orphanClearing = true
+                        scope.launch {
+                            val result = generator.clearOrphanSerials()
+                            orphanClearing = false
+                            showOrphanClearDialog = false
+                            orphanPreview = null
+                            orphanResultMessage = context.getString(
+                                R.string.serial_orphan_clear_result,
+                                result.deleted,
+                            )
+                            refreshStats()
+                            refreshGroups()
+                        }
+                    },
+                    enabled = preview != null && !orphanClearing,
+                ) {
+                    Text(stringResource(R.string.serial_orphan_clear_yes))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        showOrphanClearDialog = false
+                        orphanPreview = null
+                    },
+                    enabled = !orphanClearing,
+                ) {
+                    Text(stringResource(R.string.serial_group_delete_no))
+                }
+            },
+        )
+    }
+
+    val busy = isGenerating || csvImporting || csvParsing || orphanClearing
 
     Column(
         modifier = modifier
@@ -398,6 +462,39 @@ fun SerialGenerationScreen(modifier: Modifier = Modifier) {
                 )
                 Text(stringResource(R.string.serial_db_total, dbTotal))
                 Text(stringResource(R.string.serial_db_unused, dbUnused))
+                Text(
+                    text = stringResource(R.string.serial_orphan_clear_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(
+                    onClick = {
+                        orphanResultMessage = null
+                        orphanClearing = true
+                        scope.launch {
+                            val preview = generator.orphanCleanupPreview()
+                            orphanClearing = false
+                            if (preview.total <= 0) {
+                                orphanResultMessage =
+                                    context.getString(R.string.serial_orphan_clear_none)
+                            } else {
+                                orphanPreview = preview
+                                showOrphanClearDialog = true
+                            }
+                        }
+                    },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(stringResource(R.string.serial_orphan_clear_button))
+                }
+                orphanResultMessage?.let { msg ->
+                    Text(
+                        text = msg,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                }
             }
         }
 

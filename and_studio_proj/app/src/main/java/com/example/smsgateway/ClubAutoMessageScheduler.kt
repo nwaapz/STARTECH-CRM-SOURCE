@@ -1,6 +1,7 @@
 package com.example.smsgateway
 
 import android.content.Context
+import com.example.smsgateway.data.ClubAutoMessageAutoSource
 import com.example.smsgateway.data.ClubAutoMessageChannel
 import com.example.smsgateway.data.ClubAutoMessageRuleEntity
 import com.example.smsgateway.data.ClubAutoMessageRunStatus
@@ -23,7 +24,9 @@ import java.util.Calendar
  * Runs club auto-message rules daily at each rule's configured local time.
  * Configuration is done only via the web CRM; this class executes on the gateway.
  *
- * Recipients: serials registered on or before (today − offset) in the selected groups.
+ * Recipients: serials registered on or before (today − offset) in the selected groups —
+ * except [ClubAutoMessageAutoSource.WARRANTY_PRE], which matches the offset day exactly
+ * (so "X days remaining" is never sent after that day has passed).
  * Each serial receives a given rule on a given channel at most once (permanent ledger).
  * Each run alarms at most [ClubAutoMessageRuleEntity.dailyCap] distinct serials; the rest wait for tomorrow.
  */
@@ -208,7 +211,7 @@ class ClubAutoMessageScheduler private constructor(
 
     private suspend fun resolveEligibleSerials(
         rule: ClubAutoMessageRuleEntity,
-        onOrBeforeDate: String,
+        cutoffDate: String,
     ): List<EligibleSerial> {
         val groupIds = decodeSerialGroupIds(rule.serialGroupIdsJson)
         val rows: List<PhoneSerialDateRow> = if (groupIds.isNotEmpty()) {
@@ -217,12 +220,19 @@ class ClubAutoMessageScheduler private constructor(
             val category = SerialGroupCategory.normalizeOrDefault(rule.serialCategory)
             database.serialDao().listRegisteredPhoneSerialDatesForCategory(category)
         }
+        // Pre-end warranty text says "X days remaining" — only fire on that exact day.
+        val exactDayOnly = rule.autoSource == ClubAutoMessageAutoSource.WARRANTY_PRE
         val bySerial = LinkedHashMap<String, EligibleSerial>()
         for (row in rows) {
             val serial = row.serial.trim().uppercase()
             val phone = row.phone.trim()
             if (serial.isEmpty() || phone.isEmpty()) continue
-            if (!JalaliHelper.isJalaliDateOnOrBefore(row.date, onOrBeforeDate)) continue
+            val dateMatches = if (exactDayOnly) {
+                JalaliHelper.isJalaliDateEqual(row.date, cutoffDate)
+            } else {
+                JalaliHelper.isJalaliDateOnOrBefore(row.date, cutoffDate)
+            }
+            if (!dateMatches) continue
             val dateKey = JalaliHelper.datePrefixForCompare(row.date).orEmpty()
             val existing = bySerial[serial]
             if (existing == null || dateKey < existing.dateKey) {

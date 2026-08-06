@@ -251,6 +251,24 @@ data class SmsProcessingSettingsResponse(
 )
 
 @Serializable
+data class SmsProcessingDebugLogEntryResponse(
+    val id: Long,
+    val timestamp: String,
+    val correlationId: String,
+    val phone: String,
+    val mode: String,
+    val message: String,
+    val line: String,
+)
+
+@Serializable
+data class SmsProcessingDebugLogResponse(
+    val count: Int,
+    val entries: List<SmsProcessingDebugLogEntryResponse>,
+    val text: String,
+)
+
+@Serializable
 data class SmsMessagePlaceholderHintResponse(
     val token: String,
     val labelFa: String,

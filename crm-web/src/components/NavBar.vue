@@ -19,6 +19,7 @@ const allLinks = [
   { to: '/bots', label: 'ربات‌ها', matchPrefix: true as boolean | undefined },
   { to: '/messages', label: 'تنظیمات پیام' },
   { to: '/settings', label: 'تنظیمات' },
+  { to: '/sms-debug', label: 'لاگ پردازش پیامک' },
   { to: '/admin-setup', label: 'راه‌اندازی ادمین' },
 ]
 

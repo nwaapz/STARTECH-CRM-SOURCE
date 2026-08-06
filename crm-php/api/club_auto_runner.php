@@ -112,6 +112,9 @@ function crm_club_rule_group_ids(array $rule): array
 
 /**
  * Eligible registrations as one row per serial (oldest first).
+ * For auto_source=warranty_pre: registration date must equal the cutoff day exactly
+ * (so "X days remaining" is never sent after that reminder day has passed).
+ * For all other rules: registration on or before the cutoff (catch-up).
  *
  * @return list<array{phone:string,serial:string,km:?string,date:?string}>
  */
@@ -122,6 +125,7 @@ function crm_club_load_eligible_registrations(mysqli $conn, array $rule, string 
     $where = [is_registered_sql()];
     $types = '';
     $params = [];
+    $exactDayOnly = (($rule['auto_source'] ?? '') === 'warranty_pre');
 
     if ($groupIds !== []) {
         $placeholders = implode(',', array_fill(0, count($groupIds), '?'));
@@ -159,52 +163,47 @@ function crm_club_load_eligible_registrations(mysqli $conn, array $rule, string 
     }
     $stmt->execute();
     $res = method_exists($stmt, 'get_result') ? $stmt->get_result() : null;
+
+    $cutoffDay = substr(trim($cutoffJalali), 0, 10);
+    $appendEligible = static function (array $row) use (&$items, $exactDayOnly, $cutoffDay): void {
+        $phone = crm_club_normalize_phone((string) ($row['phone'] ?? ''));
+        $serial = strtoupper(trim((string) ($row['serial'] ?? '')));
+        if ($phone === '' || $serial === '') {
+            return;
+        }
+        $regDate = serial_date_jalali($row);
+        if ($regDate === null) {
+            return;
+        }
+        $regDay = substr(trim($regDate), 0, 10);
+        if ($exactDayOnly) {
+            if ($regDay !== $cutoffDay) {
+                return;
+            }
+        } elseif ($regDay > $cutoffDay) {
+            return;
+        }
+        $km = null;
+        if (isset($row['km']) && $row['km'] !== null && $row['km'] !== '') {
+            $km = (string) (int) $row['km'];
+        }
+        $items[] = [
+            'phone' => $phone,
+            'serial' => $serial,
+            'km' => $km,
+            'date' => $regDate,
+            '_sort' => $regDay,
+        ];
+    };
+
     $items = [];
     if ($res) {
         while ($row = $res->fetch_assoc()) {
-            $phone = crm_club_normalize_phone((string) ($row['phone'] ?? ''));
-            $serial = strtoupper(trim((string) ($row['serial'] ?? '')));
-            if ($phone === '' || $serial === '') {
-                continue;
-            }
-            $regDate = serial_date_jalali($row);
-            if ($regDate === null || $regDate > $cutoffJalali) {
-                continue;
-            }
-            $km = null;
-            if (isset($row['km']) && $row['km'] !== null && $row['km'] !== '') {
-                $km = (string) (int) $row['km'];
-            }
-            $items[] = [
-                'phone' => $phone,
-                'serial' => $serial,
-                'km' => $km,
-                'date' => $regDate,
-                '_sort' => $regDate,
-            ];
+            $appendEligible($row);
         }
     } else {
         foreach (stmt_fetch_all_assoc($stmt) as $row) {
-            $phone = crm_club_normalize_phone((string) ($row['phone'] ?? ''));
-            $serial = strtoupper(trim((string) ($row['serial'] ?? '')));
-            if ($phone === '' || $serial === '') {
-                continue;
-            }
-            $regDate = serial_date_jalali($row);
-            if ($regDate === null || $regDate > $cutoffJalali) {
-                continue;
-            }
-            $km = null;
-            if (isset($row['km']) && $row['km'] !== null && $row['km'] !== '') {
-                $km = (string) (int) $row['km'];
-            }
-            $items[] = [
-                'phone' => $phone,
-                'serial' => $serial,
-                'km' => $km,
-                'date' => $regDate,
-                '_sort' => $regDate,
-            ];
+            $appendEligible($row);
         }
     }
     $stmt->close();

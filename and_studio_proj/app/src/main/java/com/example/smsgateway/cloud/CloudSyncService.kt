@@ -104,6 +104,7 @@ class CloudSyncService(context: Context) {
         pendingLocal: Int = _progressFlow.value.pendingLocal,
         pendingRemote: Int = _progressFlow.value.pendingRemote,
         conflictCount: Int = _progressFlow.value.conflictCount,
+        pullPage: Int = _progressFlow.value.pullPage,
     ) {
         _progressFlow.value = CloudSyncProgress(
             running = running,
@@ -117,6 +118,7 @@ class CloudSyncService(context: Context) {
             pendingLocal = pendingLocal,
             pendingRemote = pendingRemote,
             conflictCount = conflictCount,
+            pullPage = pullPage,
         )
     }
 
@@ -283,79 +285,134 @@ class CloudSyncService(context: Context) {
                 return@withLock CloudSyncResult(false, msg)
             }
             try {
-                setProgress(running = true, phase = "fetch", percent = 5, detail = "Fetching buffers…")
-                val localPending = loadLocalPending()
-                val remotePending = fetchRemoteBuffer(base, token)
-                setProgress(
-                    running = true,
-                    phase = "fetch",
-                    percent = 15,
-                    detail = "Comparing buffers…",
-                    pendingLocal = localPending.size,
-                    pendingRemote = remotePending.size,
-                )
-
-                val conflicts = BufferConflictDetector.findConflicts(localPending, remotePending)
-                val unresolved = conflicts.filter {
-                    resolutions[it.serial.uppercase()] == null &&
-                        resolutions[it.serial] == null
-                }
-                if (unresolved.isNotEmpty()) {
-                    val session = SyncConflictSession(conflicts = unresolved)
-                    _conflictSession.value = session
+                var page = 0
+                var totalApplied = 0
+                // The server returns pending entries oldest-first, capped per request
+                // (there's no periodic background sync anymore to drain a big backlog
+                // over several cycles), so a single "Get from server" tap must keep
+                // paging until the server reports nothing left — otherwise a backlog
+                // bigger than one page would leave the newest changes stuck at the
+                // back of the queue forever.
+                while (page < MAX_PULL_PAGES) {
+                    page++
                     setProgress(
-                        running = false,
-                        phase = "conflicts",
-                        percent = 30,
-                        detail = "Waiting for conflict resolution (${unresolved.size})",
+                        running = true,
+                        phase = "fetch",
+                        percent = 5,
+                        detail = if (page == 1) "Fetching buffers…" else "Fetching more (page $page)…",
+                        pullPage = page,
+                    )
+                    val localPending = loadLocalPending()
+                    val remotePending = fetchRemoteBuffer(base, token)
+                    setProgress(
+                        running = true,
+                        phase = "fetch",
+                        percent = 15,
+                        detail = "Comparing buffers…",
                         pendingLocal = localPending.size,
                         pendingRemote = remotePending.size,
-                        conflictCount = unresolved.size,
+                        pullPage = page,
                     )
-                    showConflictNotification(unresolved.size)
-                    // Still apply non-conflicting entries first.
+
+                    if (remotePending.isEmpty()) {
+                        clearConflictSession()
+                        val pendingLeft = db.syncOutboxDao().countPending()
+                        val msg = if (totalApplied > 0) {
+                            "Got data from server ($totalApplied applied; local pending left: $pendingLeft)"
+                        } else {
+                            "Already up to date (local pending left: $pendingLeft)"
+                        }
+                        setProgress(
+                            running = false,
+                            phase = "done",
+                            percent = 100,
+                            detail = msg,
+                            pendingLocal = pendingLeft,
+                            conflictCount = 0,
+                        )
+                        return@withLock CloudSyncResult(true, msg)
+                    }
+
+                    val conflicts = BufferConflictDetector.findConflicts(localPending, remotePending)
+                    val unresolved = conflicts.filter {
+                        resolutions[it.serial.uppercase()] == null &&
+                            resolutions[it.serial] == null
+                    }
+                    if (unresolved.isNotEmpty()) {
+                        val session = SyncConflictSession(conflicts = unresolved)
+                        _conflictSession.value = session
+                        setProgress(
+                            running = false,
+                            phase = "conflicts",
+                            percent = 30,
+                            detail = "Waiting for conflict resolution (${unresolved.size})",
+                            pendingLocal = localPending.size,
+                            pendingRemote = remotePending.size,
+                            conflictCount = unresolved.size,
+                        )
+                        showConflictNotification(unresolved.size)
+                        // Still apply non-conflicting entries first.
+                        applyNonConflictingRemote(
+                            base,
+                            token,
+                            remotePending,
+                            conflicts,
+                            resolutions,
+                            pauseAfter = true,
+                        )
+                        setProgress(
+                            running = false,
+                            phase = "conflicts",
+                            percent = 100,
+                            detail = "Waiting for conflict resolution (${unresolved.size})",
+                            pendingLocal = db.syncOutboxDao().countPending(),
+                            pendingRemote = remotePending.size,
+                            conflictCount = unresolved.size,
+                        )
+                        return@withLock CloudSyncResult(
+                            ok = false,
+                            message = "Conflicts require resolution (${unresolved.size})",
+                            needsConflictResolution = true,
+                        )
+                    }
+
+                    clearConflictSession()
                     applyNonConflictingRemote(
                         base,
                         token,
                         remotePending,
                         conflicts,
                         resolutions,
-                        pauseAfter = true,
+                        pauseAfter = false,
                     )
-                    setProgress(
-                        running = false,
-                        phase = "conflicts",
-                        percent = 100,
-                        detail = "Waiting for conflict resolution (${unresolved.size})",
-                        pendingLocal = db.syncOutboxDao().countPending(),
-                        pendingRemote = remotePending.size,
-                        conflictCount = unresolved.size,
-                    )
-                    return@withLock CloudSyncResult(
-                        ok = false,
-                        message = "Conflicts require resolution (${unresolved.size})",
-                        needsConflictResolution = true,
-                    )
+                    totalApplied += remotePending.size
+                    // A short page (less than the server's per-request cap) means the
+                    // backlog is drained; no need to make one more round-trip.
+                    if (remotePending.size < PULL_PAGE_SIZE_HINT) {
+                        val pendingLeft = db.syncOutboxDao().countPending()
+                        val msg = "Got data from server ($totalApplied applied; local pending left: $pendingLeft)"
+                        setProgress(
+                            running = false,
+                            phase = "done",
+                            percent = 100,
+                            detail = msg,
+                            pendingLocal = pendingLeft,
+                            conflictCount = 0,
+                        )
+                        return@withLock CloudSyncResult(true, msg)
+                    }
                 }
-
-                clearConflictSession()
-                val result = applyNonConflictingRemote(
-                    base,
-                    token,
-                    remotePending,
-                    conflicts,
-                    resolutions,
-                    pauseAfter = false,
-                )
+                val pendingLeft = db.syncOutboxDao().countPending()
+                val msg = "Got data from server ($totalApplied applied so far; more remains — tap again)"
                 setProgress(
                     running = false,
                     phase = "done",
                     percent = 100,
-                    detail = result.message,
-                    pendingLocal = db.syncOutboxDao().countPending(),
+                    detail = msg,
+                    pendingLocal = pendingLeft,
                     conflictCount = 0,
                 )
-                result
+                CloudSyncResult(true, msg)
             } catch (e: CancellationException) {
                 setProgress(running = false, phase = "error", percent = 0, detail = "Cancelled")
                 throw e
@@ -919,6 +976,16 @@ class CloudSyncService(context: Context) {
          */
         private const val PUSH_BATCH_SIZE = 100
         private const val ACK_BATCH_SIZE = 500
+
+        /**
+         * Must match the server's per-request cap in `GET /api/sync/buffer`
+         * (`sync_buffer_list_pending($conn, 500)`). Used only to detect a short
+         * (final) page so pullInternal can stop without one extra empty round-trip.
+         */
+        private const val PULL_PAGE_SIZE_HINT = 500
+
+        /** Safety cap so a huge backlog can't loop forever in a single tap (500 * 40 = 20k rows). */
+        private const val MAX_PULL_PAGES = 40
 
         @Volatile
         private var instance: CloudSyncService? = null

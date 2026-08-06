@@ -372,7 +372,7 @@ async function saveExtend() {
           <UiSwitch
             :model-value="warrantyPreEnabled"
             label="یادآوری قبل از پایان گارانتی"
-            description="چند روز مانده به پایان گارانتی، پیام خودکار ارسال می‌شود."
+            description="فقط در همان روزی که دقیقاً این تعداد روز تا پایان گارانتی مانده، پیام ارسال می‌شود (بعد از آن روز دیگر ارسال نمی‌شود)."
             :disabled="!hasWarrantyMonths || warrantySyncing"
             @update:model-value="onWarrantyPreToggle"
           />

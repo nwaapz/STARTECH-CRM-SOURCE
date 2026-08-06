@@ -18,6 +18,7 @@ import PhotoReviewView from '@/views/PhotoReviewView.vue'
 import ReferralView from '@/views/ReferralView.vue'
 import LotteryView from '@/views/LotteryView.vue'
 import AdminSetupView from '@/views/AdminSetupView.vue'
+import SmsProcessingDebugView from '@/views/SmsProcessingDebugView.vue'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -32,6 +33,7 @@ const router = createRouter({
     { path: '/referral', name: 'referral', component: ReferralView },
     { path: '/lottery', name: 'lottery', component: LotteryView },
     { path: '/admin-setup', name: 'admin-setup', component: AdminSetupView },
+    { path: '/sms-debug', name: 'sms-debug', component: SmsProcessingDebugView },
     { path: '/mass-sms', name: 'mass-sms', component: MassSmsView },
     { path: '/whatsapp', name: 'whatsapp', component: WhatsAppView },
     {

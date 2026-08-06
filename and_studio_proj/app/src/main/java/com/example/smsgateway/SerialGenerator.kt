@@ -1002,6 +1002,32 @@ class SerialGenerator(
         true
     }
 
+    data class OrphanCleanupPreview(
+        val total: Int,
+        val registered: Int,
+    )
+
+    data class OrphanCleanupResult(
+        val deleted: Int,
+    )
+
+    /** Count serials that are not attached to any existing serial-group card. */
+    suspend fun orphanCleanupPreview(): OrphanCleanupPreview = withContext(Dispatchers.IO) {
+        val dao = database.serialDao()
+        OrphanCleanupPreview(
+            total = dao.countOrphanSerials(),
+            registered = dao.countOrphanRegisteredSerials(),
+        )
+    }
+
+    /**
+     * Delete every serial whose [SerialEntity.groupId] is null or does not match a
+     * row in [serial_groups]. Keeps only inventory that belongs to a visible card.
+     */
+    suspend fun clearOrphanSerials(): OrphanCleanupResult = withContext(Dispatchers.IO) {
+        OrphanCleanupResult(deleted = database.serialDao().deleteOrphanSerials())
+    }
+
     suspend fun listSerialsForGroup(groupId: Long): List<String> = withContext(Dispatchers.IO) {
         val groupDao = database.serialGroupDao()
         if (groupDao.findById(groupId) == null) {

@@ -128,6 +128,7 @@ interface SerialDao {
         """
         UPDATE gateway_db
         SET phone = :phone, date = :date, registrationFieldsComplete = 0,
+            city = NULL, km = NULL,
             registrationSubscriptionId = :subscriptionId, registrationSource = :registrationSource
         WHERE serial = :serial
           AND (phone IS NULL OR TRIM(phone) = '' OR TRIM(phone) = '0')
@@ -504,6 +505,44 @@ interface SerialDao {
 
     @Query("DELETE FROM gateway_db WHERE groupId = :groupId")
     suspend fun deleteByGroupId(groupId: Long): Int
+
+    /**
+     * Serials with no matching [serial_groups] card: null groupId, or a stale groupId
+     * left after sync / incomplete delete.
+     */
+    @Query(
+        """
+        SELECT COUNT(*) FROM gateway_db
+        WHERE groupId IS NULL
+           OR NOT EXISTS (
+             SELECT 1 FROM serial_groups g WHERE g.id = gateway_db.groupId
+           )
+        """,
+    )
+    suspend fun countOrphanSerials(): Int
+
+    @Query(
+        "SELECT COUNT(*) FROM gateway_db WHERE (" + RegisteredPhoneSql.IS_REGISTERED + """)
+          AND (
+            groupId IS NULL
+            OR NOT EXISTS (
+              SELECT 1 FROM serial_groups g WHERE g.id = gateway_db.groupId
+            )
+          )
+        """,
+    )
+    suspend fun countOrphanRegisteredSerials(): Int
+
+    @Query(
+        """
+        DELETE FROM gateway_db
+        WHERE groupId IS NULL
+           OR NOT EXISTS (
+             SELECT 1 FROM serial_groups g WHERE g.id = gateway_db.groupId
+           )
+        """,
+    )
+    suspend fun deleteOrphanSerials(): Int
 
     @Query(
         """

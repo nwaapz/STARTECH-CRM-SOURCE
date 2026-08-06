@@ -34,6 +34,7 @@ import com.example.smsgateway.SmsMessageTemplates
 import com.example.smsgateway.SmsOutbound
 import com.example.smsgateway.SmsOutboundQuotaExceededException
 import com.example.smsgateway.SmsProcessingConfig
+import com.example.smsgateway.SmsProcessingDebugLog
 import com.example.smsgateway.SmsProcessingMode
 import com.example.smsgateway.SyncEventWriter
 import com.example.smsgateway.BaleApi
@@ -1095,6 +1096,62 @@ fun Application.configureLanRoutes(
                 }
                 settingsStore.setSmsProcessingConfig(config)
                 call.respond(settingsStore.getSmsProcessingConfig().toResponse())
+            }
+
+            get("/sms-processing/debug-log") {
+                when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
+                    LanAccessResult.OK -> Unit
+                    else -> {
+                        LanAuth.reject(call, access)
+                        return@get
+                    }
+                }
+                val limit = call.request.queryParameters["limit"]?.toIntOrNull()?.coerceIn(1, 2_000) ?: 500
+                val phone = call.request.queryParameters["phone"]
+                val asText = call.request.queryParameters["format"] == "text"
+                if (asText) {
+                    call.respondText(
+                        text = SmsProcessingDebugLog.snapshotText(limit = limit, phoneFilter = phone),
+                        contentType = ContentType.Text.Plain.withCharset(Charsets.UTF_8),
+                    )
+                    return@get
+                }
+                val entries = SmsProcessingDebugLog.snapshot(limit = limit, phoneFilter = phone)
+                call.respond(
+                    SmsProcessingDebugLogResponse(
+                        count = entries.size,
+                        entries = entries.map { entry ->
+                            SmsProcessingDebugLogEntryResponse(
+                                id = entry.id,
+                                timestamp = entry.timestamp,
+                                correlationId = entry.correlationId,
+                                phone = entry.phone,
+                                mode = entry.mode,
+                                message = entry.message,
+                                line = entry.formatted(),
+                            )
+                        },
+                        text = entries.asReversed().joinToString("\n") { it.formatted() },
+                    ),
+                )
+            }
+
+            post("/sms-processing/debug-log/clear") {
+                when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
+                    LanAccessResult.OK -> Unit
+                    else -> {
+                        LanAuth.reject(call, access)
+                        return@post
+                    }
+                }
+                SmsProcessingDebugLog.clear()
+                call.respond(
+                    SmsProcessingDebugLogResponse(
+                        count = SmsProcessingDebugLog.size(),
+                        entries = emptyList(),
+                        text = SmsProcessingDebugLog.snapshotText(),
+                    ),
+                )
             }
 
             get("/settings/sim-quota") {

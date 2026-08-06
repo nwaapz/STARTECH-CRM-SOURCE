@@ -218,13 +218,19 @@ class LicenseStore private constructor(context: Context) {
 
     fun shouldSendPeriodicCheck(): Boolean {
         recomputeState()
-        val state = getState()
-        if (state == LicenseState.DENIED) {
-            // Still allow periodic re-check so a newly registered number can unlock.
+        val nowElapsed = SystemClock.elapsedRealtime()
+
+        // Verified within the last 24h → no automatic re-verification.
+        if (hasEverActivated()) {
+            val lastOk = getLastOkElapsedRealtimeMs()
+            if (lastOk > 0L && nowElapsed - lastOk < ACTIVE_FRESH_WINDOW_MS) {
+                return false
+            }
         }
+
         val lastAttempt = getLastCheckAttemptElapsedMs()
         if (lastAttempt <= 0L) return true
-        return SystemClock.elapsedRealtime() - lastAttempt >= CHECK_INTERVAL_MS
+        return nowElapsed - lastAttempt >= CHECK_INTERVAL_MS
     }
 
     companion object {
@@ -248,12 +254,13 @@ class LicenseStore private constructor(context: Context) {
         /** Short window for first activation (not the 30-day grace). */
         const val NEVER_ACTIVATED_WINDOW_MS: Long = 72L * 60L * 60L * 1000L
 
-        /** After last OK, treat as ACTIVE for one day then GRACE until 30 days. */
+        /** After last successful OK, skip automatic re-checks for this long (then re-verify once). */
         const val ACTIVE_FRESH_WINDOW_MS: Long = 24L * 60L * 60L * 1000L
 
         /** Max time since last successful OK before LOCKED (includes ACTIVE period). */
         const val GRACE_WINDOW_MS: Long = 30L * 24L * 60L * 60L * 1000L
 
+        /** Minimum spacing between automatic check SMS attempts (anti-spam after a failed/no-reply check). */
         const val CHECK_INTERVAL_MS: Long = 24L * 60L * 60L * 1000L
 
         /** How long to wait for a reply before treating as "no reply". */

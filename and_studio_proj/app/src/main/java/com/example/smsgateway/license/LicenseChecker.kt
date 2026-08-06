@@ -20,8 +20,12 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
 /**
- * Sends daily (and on-start) license check SMSes to the admin number and
- * processes allow/deny replies.
+ * Sends license check SMSes to the admin number and processes allow/deny replies.
+ *
+ * After a successful OK, no automatic re-check is sent for [LicenseStore.ACTIVE_FRESH_WINDOW_MS]
+ * (24 hours). When that window expires, exactly one check is attempted (then spaced by
+ * [LicenseStore.CHECK_INTERVAL_MS] until the next OK). Manual [requestCheckNow] and SIM
+ * changes still force an immediate check.
  */
 class LicenseChecker private constructor(
     private val appContext: Context,
@@ -39,8 +43,6 @@ class LicenseChecker private constructor(
         registerSubscriptionListener()
         loopJob = scope.launch {
             LanTraceLog.i(TAG, "License checker started")
-            // Immediate check on start
-            runCatching { maybeSendCheck(force = true) }
             while (isActive) {
                 try {
                     tick()
@@ -61,7 +63,6 @@ class LicenseChecker private constructor(
     fun requestCheckNow() {
         if (loopJob?.isActive != true) {
             start()
-            return
         }
         scope.launch {
             runCatching { maybeSendCheck(force = true) }

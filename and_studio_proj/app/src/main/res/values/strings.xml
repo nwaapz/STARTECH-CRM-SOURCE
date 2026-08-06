@@ -164,6 +164,14 @@
     <string name="serial_group_delete_message">آیا از حذف گروه «%1$s» مطمئن هستید؟ تمام %2$d سریال این گروه (شامل %3$d مورد ثبت‌شده) برای همیشه از پایگاه داده حذف می‌شوند.</string>
     <string name="serial_group_delete_yes">بله، حذف کن</string>
     <string name="serial_group_delete_no">انصراف</string>
+    <string name="serial_orphan_clear_button">پاکسازی سریال‌های بدون کارت</string>
+    <string name="serial_orphan_clear_hint">سریال‌هایی که به هیچ کارت گروهی تعلق ندارند (مثلاً بعد از همگام‌سازی یا حذف ناقص) از پایگاه داده حذف می‌شوند.</string>
+    <string name="serial_orphan_clear_none">سریال بدون کارتی برای پاکسازی نیست</string>
+    <string name="serial_orphan_clear_title">پاکسازی سریال‌های بدون کارت</string>
+    <string name="serial_orphan_clear_message">%1$d سریال بدون کارت یافت شد (شامل %2$d مورد ثبت‌شده). همهٔ آن‌ها برای همیشه از پایگاه داده حذف می‌شوند. ادامه می‌دهید؟</string>
+    <string name="serial_orphan_clear_yes">بله، پاک کن</string>
+    <string name="serial_orphan_clear_result">%1$d سریال بدون کارت حذف شد</string>
+    <string name="serial_orphan_clear_working">در حال پاکسازی…</string>
     <string name="serial_group_created_at">ایجاد: %1$s</string>
     <string name="serial_group_no_description">بدون توضیحات</string>
     <string name="serial_group_edit_button">ویرایش</string>
@@ -322,6 +330,17 @@
     <string name="settings_backup_delete">حذف</string>
     <string name="settings_backup_delete_confirm">«%1$s» حذف شود؟</string>
     <string name="settings_backup_cancel">انصراف</string>
+
+    <string name="settings_profile_title">ذخیره و بارگذاری تنظیمات</string>
+    <string name="settings_profile_hint">تمام تنظیمات برنامه — حالت پردازش پیامک، متن پیام‌های پاسخ، توکن و تنظیمات ربات‌ها، معرفی دوستان، LAN، همگام‌سازی ابری، پشتیبان‌گیری، ملی‌پیامک، سیم‌کارت — در یک فایل JSON ذخیره می‌شود. این فایل شامل اطلاعات حساس (توکن‌ها و رمزها) نیز هست؛ آن را جای امنی نگه دارید. بارگذاری یک فایل، همهٔ تنظیمات فعلی این دستگاه را جایگزین می‌کند و برنامه را راه‌اندازی مجدد می‌کند.</string>
+    <string name="settings_profile_save">ذخیره تنظیمات در فایل…</string>
+    <string name="settings_profile_save_ok">تنظیمات ذخیره شد</string>
+    <string name="settings_profile_save_failed">ذخیره تنظیمات ناموفق بود</string>
+    <string name="settings_profile_load">بارگذاری تنظیمات از فایل…</string>
+    <string name="settings_profile_load_title">بارگذاری تنظیمات</string>
+    <string name="settings_profile_load_confirm">همهٔ تنظیمات فعلی این دستگاه (از جمله توکن و رمز ربات‌ها) با فایل انتخاب‌شده جایگزین می‌شوند و برنامه راه‌اندازی مجدد می‌شود. ادامه می‌دهید؟</string>
+    <string name="settings_profile_load_failed">بارگذاری تنظیمات ناموفق بود</string>
+    <string name="settings_profile_load_restarting">تنظیمات بارگذاری شد — در حال راه‌اندازی مجدد…</string>
 
     <string name="settings_sms_engine_device_hint">ارسال و دریافت مستقیم از سیم‌کارت دستگاه (حالت فعلی).</string>
     <string name="settings_sms_engine_panel">پنل ملی‌پیامک</string>

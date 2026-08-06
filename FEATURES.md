@@ -241,7 +241,7 @@ Scheduled outreach to club members:
 - Message body with `{سریال}` / `{serial}` placeholders
 - Permanent per-rule / per-phone / per-channel dedup (never re-send the same rule on that channel)
 - **Run now** from CRM (still respects dedup)
-- Catch-up when the gateway was offline (eligible if registration is on or before the offset date)
+- Catch-up when the gateway was offline (eligible if registration is on or before the offset date) — **except** warranty pre-end reminders (`warranty_pre`), which match the offset day **exactly** so “X days remaining” is never sent after that day has passed. Warranty-end (`warranty_end`) still uses catch-up.
 
 ### 2.14 Settings (phone)
 
