@@ -58,7 +58,19 @@
     <string name="tab_rubika">روبیکا</string>
     <string name="tab_telegram">تلگرام</string>
     <string name="tab_bale">بله</string>
+    <string name="tab_bots">بات‌ها</string>
+    <string name="tab_reports">گزارش‌ها</string>
     <string name="tab_settings">تنظیمات</string>
+
+    <string name="reports_total">ثبت‌شده: %1$d</string>
+    <string name="reports_empty">هنوز سریالی ثبت نشده است</string>
+    <string name="reports_prev_page">قبلی</string>
+    <string name="reports_next_page">بعدی</string>
+    <string name="reports_page_of">صفحه %1$d از %2$d</string>
+    <string name="reports_km_value">%1$d کیلومتر</string>
+    <string name="reports_repair_button">اصلاح تاریخ‌های خالی</string>
+    <string name="reports_repair_running">در حال اصلاح تاریخ…</string>
+    <string name="reports_repair_failed">خطا در اصلاح تاریخ‌های خالی</string>
 
     <string name="rubika_setup_title">اتصال ربات روبیکا</string>
     <string name="rubika_setup_hint">توکن ربات را وارد کنید و دکمه اتصال را بزنید. پس از تأیید، ربات فعال می‌ماند.</string>

@@ -655,6 +655,7 @@ function client_calling_for_unused_serial($serial, $phone, $conn)
     }
     $stmtUpdate->close();
     smsRecordRegistrationActivity($conn, $phone, $serial);
+    smsMaybeSendClubWelcome($conn, $phone, $serial);
 
     $sqlAd = "SELECT message FROM ad_sms";
     $resultAd = mysqli_query($conn, $sqlAd);
@@ -721,6 +722,7 @@ function register_seller_unused_serial($serial, $phone, $conn)
         if ($stmtUpdate->execute() && $stmtUpdate->affected_rows > 0) {
             $stmtUpdate->close();
             smsRecordRegistrationActivity($conn, $phone, $serial, ['city' => $knownCity]);
+            smsMaybeSendClubWelcome($conn, $phone, $serial);
             if ($syncToMcode) {
                 syncSToMSerialToMcode($conn, $serial, $phone, $knownCity);
             }
@@ -752,6 +754,7 @@ function register_seller_unused_serial($serial, $phone, $conn)
     $stmtUpdate->close();
 
     smsRecordRegistrationActivity($conn, $phone, $serial);
+    smsMaybeSendClubWelcome($conn, $phone, $serial);
     if ($syncToMcode) {
         syncSToMSerialToMcode($conn, $serial, $phone);
     }
@@ -924,6 +927,92 @@ function SendConfirmSms($phone, $conn, $column = 'c', $appendScore = null)
         }
 
         SendMessage($phone, $message);
+    }
+}
+
+function smsMaybeSendClubWelcome($conn, $phone, $serial = null)
+{
+    if (!$conn) {
+        return;
+    }
+    try {
+        $phoneNorm = preg_replace('/\D/', '', trim((string) $phone));
+        if ($phoneNorm !== '' && strpos($phoneNorm, '98') === 0 && strlen($phoneNorm) >= 12) {
+            $phoneNorm = '0' . substr($phoneNorm, 2);
+        }
+        if (strlen($phoneNorm) === 10 && isset($phoneNorm[0]) && $phoneNorm[0] === '9') {
+            $phoneNorm = '0' . $phoneNorm;
+        }
+        if ($phoneNorm === '') {
+            return;
+        }
+        $res = @$conn->query(
+            "SELECT setting_value FROM crm_settings WHERE setting_key = 'club_welcome_settings' LIMIT 1"
+        );
+        if (!$res) {
+            return;
+        }
+        $settingRow = $res->fetch_assoc();
+        if (!$settingRow) {
+            return;
+        }
+        $decoded = json_decode((string) ($settingRow['setting_value'] ?? ''), true);
+        if (!is_array($decoded) || empty($decoded['enabled'])) {
+            return;
+        }
+        $template = trim((string) ($decoded['message'] ?? ''));
+        if ($template === '') {
+            return;
+        }
+        $row = null;
+        $serialKey = $serial !== null ? strtoupper(trim((string) $serial)) : '';
+        foreach (['old_serials', 'new_serials'] as $table) {
+            if ($serialKey !== '') {
+                $stmt = $conn->prepare("SELECT * FROM `$table` WHERE UPPER(serial) = ? LIMIT 1");
+                if ($stmt) {
+                    $stmt->bind_param('s', $serialKey);
+                    $stmt->execute();
+                    $got = $stmt->get_result();
+                    $row = $got ? $got->fetch_assoc() : null;
+                    $stmt->close();
+                    if ($row) {
+                        break;
+                    }
+                }
+            }
+            $stmt = $conn->prepare(
+                "SELECT * FROM `$table` WHERE phone = ? ORDER BY id DESC LIMIT 1"
+            );
+            if (!$stmt) {
+                continue;
+            }
+            $stmt->bind_param('s', $phoneNorm);
+            $stmt->execute();
+            $got = $stmt->get_result();
+            $row = $got ? $got->fetch_assoc() : null;
+            $stmt->close();
+            if ($row) {
+                break;
+            }
+        }
+        if (!$row) {
+            return;
+        }
+        $serialVal = (string) ($row['serial'] ?? '');
+        $kmVal = (isset($row['km']) && $row['km'] !== null && $row['km'] !== '')
+            ? (string) (int) $row['km'] : '';
+        $dateVal = trim((string) ($row['date_jalali'] ?? $row['time'] ?? ''));
+        $body = str_replace(
+            ['{سریال}', '{serial}', '{کیلومتر}', '{km}', '{تاریخ}', '{date}'],
+            [$serialVal, $serialVal, $kmVal, $kmVal, $dateVal, $dateVal],
+            $template
+        );
+        if (trim($body) === '') {
+            return;
+        }
+        SendMessage($phoneNorm, $body);
+    } catch (Throwable $e) {
+        error_log('[SMS.php club welcome] ' . $e->getMessage());
     }
 }
 

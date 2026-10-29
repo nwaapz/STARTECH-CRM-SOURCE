@@ -23,12 +23,13 @@ function smsIsSellerCategory($category): bool
 }
 
 /**
- * Seller SMS pipeline for old_serials: category seller_to_end_user or legacy S440000–S450000.
- * @param array|null $row optional DB row (needs category when not SToM range)
+ * Seller SMS pipeline for old_serials:
+ * M-prefix, legacy S440000–S450000, or category seller_to_end_user.
+ * @param array|null $row optional DB row (needs category when not M / SToM)
  */
 function smsOldSerialIsSellerPipeline($serial, $row = null): bool
 {
-    if (isSToMRange($serial)) {
+    if (isMprefixSerial($serial) || isSToMRange($serial)) {
         return true;
     }
     if (is_array($row) && smsIsSellerCategory($row['category'] ?? '')) {

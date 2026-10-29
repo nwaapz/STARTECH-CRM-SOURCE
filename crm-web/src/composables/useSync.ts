@@ -1,6 +1,8 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { fetchSync, getSyncCursor, setSyncCursor } from '@/api/client'
 import type { SimQuotaStatus, Stats, SyncChange } from '@/api/types'
+import { isRemoteSurface } from '@/config/surface'
+import { perfPageNote } from '@/utils/perfDebug'
 import { formatPhoneForDisplay } from '@/utils/formatPhone'
 
 export interface ToastMessage {
@@ -13,7 +15,7 @@ function prependChanges(existing: SyncChange[], incoming: SyncChange[]): SyncCha
 }
 
 export function useSync(options: { intervalMs?: number; enabled?: () => boolean } = {}) {
-  const intervalMs = options.intervalMs ?? 1000
+  const intervalMs = options.intervalMs ?? (isRemoteSurface() ? 15000 : 1000)
   const stats = ref<Stats>({ total: 0, unused: 0, registered: 0 })
   const sims = ref<SimQuotaStatus[]>([])
   const changes = ref<SyncChange[]>([])
@@ -109,6 +111,7 @@ export function useSync(options: { intervalMs?: number; enabled?: () => boolean 
   }
 
   async function poll() {
+    const pollT0 = performance.now()
     if (!ready.value) {
       scheduleNext(intervalMs)
       return
@@ -123,6 +126,7 @@ export function useSync(options: { intervalMs?: number; enabled?: () => boolean 
     }
     try {
       const response = await fetchSync(cursor.value)
+      perfPageNote(`fetchSync ${Math.round(performance.now() - pollT0)}ms (changes=${response.changes.length})`)
       connected.value = true
       backoffMs = intervalMs
       stats.value = response.stats

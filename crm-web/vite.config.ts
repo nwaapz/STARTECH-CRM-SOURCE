@@ -35,7 +35,14 @@ export default defineConfig(({ mode }) => {
       {
         name: 'strip-crossorigin',
         transformIndexHtml(html) {
-          return html.replace(/ crossorigin/g, '')
+          let out = html.replace(/ crossorigin/g, '')
+          if (remote) {
+            out = out.replace(
+              '</head>',
+              `  <meta name="crm-build" content="perf-debug" />\n</head>`,
+            )
+          }
+          return out
         },
       },
       ...(remote

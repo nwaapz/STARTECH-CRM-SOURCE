@@ -62,10 +62,16 @@ import type {
   ClubAutoMessagePreviewResponse,
   SerialPhotoSubmission,
   SerialPhotoSubmissionListResponse,
+  ClubWelcomeSettings,
+  ClubAnnouncement,
+  ClubAnnouncementListResponse,
+  ClubAnnouncementSendListResponse,
+  ClubAnnouncementUpsertRequest,
   ReferralSettings,
   ReferralCustomerListResponse,
 } from './types'
 import { DuplicateSerialError } from './types'
+import { isPerfDebugEnabled, recordPerfEntry, type ServerDebug } from '@/utils/perfDebug'
 
 const PIN_KEY = 'gateway_pin'
 const SYNC_CURSOR_KEY = 'gateway_sync_cursor'
@@ -115,12 +121,37 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   if (pin) {
     headers.set('Authorization', `Bearer ${pin}`)
   }
+  const debugOn = isPerfDebugEnabled()
+  if (debugOn) {
+    headers.set('X-Crm-Debug', '1')
+  }
   const url = apiUrl(path)
-  const response = await fetch(url, { ...init, headers })
+  const method = (init.method ?? 'GET').toUpperCase()
+  const t0 = performance.now()
+  let response: Response
+  try {
+    response = await fetch(url, { ...init, headers })
+  } catch (e) {
+    if (debugOn) {
+      recordPerfEntry({
+        method,
+        path,
+        clientMs: performance.now() - t0,
+        status: 0,
+        error: e instanceof Error ? e.message : 'network error',
+      })
+    }
+    throw e
+  }
+  const clientMs = performance.now() - t0
   if (!response.ok) {
     let message = response.statusText
+    let serverDebug: ServerDebug | undefined
     try {
       const body = await response.json()
+      if (body?._debug) {
+        serverDebug = body._debug as ServerDebug
+      }
       if (
         response.status === 409 &&
         body?.duplicateRanges &&
@@ -133,13 +164,39 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       if (e instanceof DuplicateSerialError) throw e
       /* ignore parse errors */
     }
+    if (debugOn) {
+      recordPerfEntry({
+        method,
+        path,
+        clientMs,
+        status: response.status,
+        server: serverDebug,
+        error: message,
+      })
+    }
     console.warn('[CRM API]', url, response.status, message)
     throw new Error(message)
   }
   if (response.status === 204) {
+    if (debugOn) {
+      recordPerfEntry({ method, path, clientMs, status: 204 })
+    }
     return undefined as T
   }
-  return response.json() as Promise<T>
+  const body = (await response.json()) as T & { _debug?: ServerDebug }
+  if (debugOn) {
+    recordPerfEntry({
+      method,
+      path,
+      clientMs,
+      status: response.status,
+      server: body._debug,
+    })
+  }
+  if (body && typeof body === 'object' && '_debug' in body) {
+    delete (body as { _debug?: ServerDebug })._debug
+  }
+  return body as T
 }
 
 export function fetchHealth(): Promise<HealthResponse> {
@@ -319,6 +376,18 @@ export function updateSerialRow(id: number, body: UpdateSerialRowRequest): Promi
     method: 'PUT',
     body: JSON.stringify(body),
   })
+}
+
+/** Repair registered rows with null/blank report dates (local DB + remote lookup). Does not run buffer sync. */
+export function repairNullDates(): Promise<{
+  ok: boolean
+  scanned: number
+  fixedLocal: number
+  fixedRemote: number
+  unfixed: number
+  message?: string
+}> {
+  return request('/api/serials/repair-null-dates', { method: 'POST', body: '{}' })
 }
 
 export function fetchSmsProcessingSettings(): Promise<SmsProcessingSettings> {
@@ -754,6 +823,55 @@ export function tickClubAutoMessages(): Promise<{ ok: boolean }> {
   })
 }
 
+export function fetchAnnouncements(): Promise<ClubAnnouncementListResponse> {
+  return request<ClubAnnouncementListResponse>('/api/announcements')
+}
+
+export function createAnnouncement(
+  body: ClubAnnouncementUpsertRequest,
+): Promise<ClubAnnouncement> {
+  return request<ClubAnnouncement>('/api/announcements', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+}
+
+export function updateAnnouncement(
+  id: number,
+  body: ClubAnnouncementUpsertRequest,
+): Promise<ClubAnnouncement> {
+  return request<ClubAnnouncement>(`/api/announcements/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export function deleteAnnouncement(id: number): Promise<void> {
+  return request<void>(`/api/announcements/${id}`, {
+    method: 'DELETE',
+  })
+}
+
+export function runAnnouncementNow(id: number): Promise<ClubAnnouncement> {
+  return request<ClubAnnouncement>(`/api/announcements/${id}/run-now`, {
+    method: 'POST',
+  })
+}
+
+export function fetchAnnouncementSends(
+  id: number,
+  page = 1,
+  limit = 50,
+): Promise<ClubAnnouncementSendListResponse> {
+  const q = new URLSearchParams({
+    page: String(page),
+    limit: String(limit),
+  })
+  return request<ClubAnnouncementSendListResponse>(
+    `/api/announcements/${id}/sends?${q.toString()}`,
+  )
+}
+
 export function fetchSerialPhotoSubmissions(params: {
   status?: string
   page?: number
@@ -812,6 +930,19 @@ export function fetchReferralSettings(): Promise<ReferralSettings> {
 
 export function updateReferralSettings(settings: ReferralSettings): Promise<ReferralSettings> {
   return request<ReferralSettings>('/api/settings/referral', {
+    method: 'PUT',
+    body: JSON.stringify(settings),
+  })
+}
+
+export function fetchClubWelcomeSettings(): Promise<ClubWelcomeSettings> {
+  return request<ClubWelcomeSettings>('/api/settings/club-welcome')
+}
+
+export function updateClubWelcomeSettings(
+  settings: ClubWelcomeSettings,
+): Promise<ClubWelcomeSettings> {
+  return request<ClubWelcomeSettings>('/api/settings/club-welcome', {
     method: 'PUT',
     body: JSON.stringify(settings),
   })
@@ -973,6 +1104,60 @@ export function runCloudSyncSend(): Promise<{ ok: boolean; message?: string }> {
  */
 export function triggerCloudAutoPull(): Promise<{ ok: boolean; message?: string }> {
   return request('/api/admin/cloud-sync/pull', { method: 'POST', body: '{}' })
+}
+
+export interface DebugDbProcess {
+  id: number
+  self: boolean
+  command: string
+  timeSec: number
+  state: string
+  info: string
+}
+
+export interface DebugDbIndex {
+  name: string
+  def: string
+  present: boolean
+  coveredBy?: string | null
+  applicable: boolean
+}
+
+export interface DebugDbStatus {
+  mysql: string
+  table: { name: string; engine: string; approxRows: number; dataMb: number; indexMb: number } | null
+  indexes: DebugDbIndex[]
+  processes: DebugDbProcess[]
+  cacheDir: string
+  schemaCached: boolean
+  finishRequest?: string
+  autoIndex?: {
+    done: boolean
+    building: boolean
+    failed: { name?: string; error?: string } | null
+  }
+}
+
+export function fetchDebugDb(): Promise<DebugDbStatus> {
+  return request<DebugDbStatus>('/api/debug/db')
+}
+
+export function debugKillStuck(minSeconds = 30): Promise<{
+  killed: { id: number; timeSec: number; info: string }[]
+  failed: { id: number; error: string }[]
+}> {
+  return request('/api/debug/kill-stuck', { method: 'POST', body: JSON.stringify({ minSeconds }) })
+}
+
+export function debugAddIndex(): Promise<{
+  ok: boolean
+  name?: string
+  ms?: number
+  error?: string
+  remaining: number
+  indexes: DebugDbIndex[]
+}> {
+  return request('/api/debug/add-index', { method: 'POST', body: '{}' })
 }
 
 export function fetchRegistrationsByDay(params: {

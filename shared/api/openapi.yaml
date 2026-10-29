@@ -2000,13 +2000,16 @@ components:
 
     UpdateSerialRegistrationRequest:
       type: object
-      required: [serial, date]
+      required: [serial, date, phone]
       properties:
         serial:
           type: string
         date:
           type: string
           description: Jalali datetime e.g. 1404/03/30 14:35:22
+        phone:
+          type: string
+          description: Iranian mobile e.g. 09121234567
         city:
           type: string
           nullable: true

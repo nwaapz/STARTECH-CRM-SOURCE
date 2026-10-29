@@ -140,14 +140,24 @@ fun CloudSyncSettingsCard(
             onConfirm = { resolutions: Map<String, SyncConflictChoice> ->
                 showConflictDialog = false
                 activeSyncJob = scope.launch {
-                    val result = withContext(Dispatchers.IO) {
-                        syncService.pullWithResolutions(resolutions)
-                    }
-                    refreshMeta()
-                    statusOk = result.ok && !result.needsConflictResolution
-                    statusMessage = result.message
-                    if (result.needsConflictResolution) {
-                        showConflictDialog = true
+                    try {
+                        val result = withContext(Dispatchers.IO) {
+                            syncService.pullWithResolutions(resolutions)
+                        }
+                        refreshMeta()
+                        statusOk = result.ok && !result.needsConflictResolution
+                        statusMessage = result.message
+                        if (result.needsConflictResolution) {
+                            showConflictDialog = true
+                        }
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Throwable) {
+                        statusOk = false
+                        statusMessage = e.message
+                            ?: context.getString(R.string.settings_cloud_sync_failed)
+                    } finally {
+                        activeSyncJob = null
                     }
                 }
             },
@@ -282,23 +292,32 @@ fun CloudSyncSettingsCard(
                         settingsStore.setCloudSyncUrl(url.trim())
                         settingsStore.setCloudSyncToken(token.trim())
                         activeSyncJob = scope.launch {
-                            val result = withContext(Dispatchers.IO) {
-                                syncService.requestBackfillAndPull()
-                            }
-                            refreshMeta()
-                            statusOk = result.ok && !result.needsConflictResolution
-                            statusMessage = if (result.ok) {
-                                context.getString(R.string.settings_cloud_sync_get_ok)
-                            } else if (result.needsConflictResolution) {
-                                result.message
-                            } else {
-                                result.message
+                            try {
+                                val result = withContext(Dispatchers.IO) {
+                                    syncService.requestBackfillAndPull()
+                                }
+                                refreshMeta()
+                                statusOk = result.ok && !result.needsConflictResolution
+                                statusMessage = if (result.ok) {
+                                    context.getString(R.string.settings_cloud_sync_get_ok)
+                                } else if (result.needsConflictResolution) {
+                                    result.message
+                                } else {
+                                    result.message
+                                        ?: context.getString(R.string.settings_cloud_sync_get_failed)
+                                }
+                                if (result.needsConflictResolution) {
+                                    showConflictDialog = true
+                                }
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
+                                statusOk = false
+                                statusMessage = e.message
                                     ?: context.getString(R.string.settings_cloud_sync_get_failed)
+                            } finally {
+                                activeSyncJob = null
                             }
-                            if (result.needsConflictResolution) {
-                                showConflictDialog = true
-                            }
-                            activeSyncJob = null
                         }
                     },
                     enabled = !busy && configured,
@@ -317,18 +336,27 @@ fun CloudSyncSettingsCard(
                         settingsStore.setCloudSyncUrl(url.trim())
                         settingsStore.setCloudSyncToken(token.trim())
                         activeSyncJob = scope.launch {
-                            val result = withContext(Dispatchers.IO) {
-                                syncService.pushOnce()
-                            }
-                            refreshMeta()
-                            statusOk = result.ok
-                            statusMessage = if (result.ok) {
-                                result.message ?: context.getString(R.string.settings_cloud_sync_send_ok)
-                            } else {
-                                result.message
+                            try {
+                                val result = withContext(Dispatchers.IO) {
+                                    syncService.pushOnce()
+                                }
+                                refreshMeta()
+                                statusOk = result.ok
+                                statusMessage = if (result.ok) {
+                                    result.message ?: context.getString(R.string.settings_cloud_sync_send_ok)
+                                } else {
+                                    result.message
+                                        ?: context.getString(R.string.settings_cloud_sync_send_failed)
+                                }
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                throw e
+                            } catch (e: Throwable) {
+                                statusOk = false
+                                statusMessage = e.message
                                     ?: context.getString(R.string.settings_cloud_sync_send_failed)
+                            } finally {
+                                activeSyncJob = null
                             }
-                            activeSyncJob = null
                         }
                     },
                     enabled = !busy && configured,

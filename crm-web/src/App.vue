@@ -2,8 +2,13 @@
 import { onMounted } from 'vue'
 import { RouterView } from 'vue-router'
 import { getPin, triggerCloudAutoPull } from '@/api/client'
+import PerfDebugPanel from '@/components/PerfDebugPanel.vue'
+import { isPerfDebugEnabled, perfPageNote } from '@/utils/perfDebug'
 
 onMounted(() => {
+  if (isPerfDebugEnabled()) {
+    perfPageNote('App mounted — perf debug ON')
+  }
   // Silent, once-per-load pull so every page reload gets fresh data if the
   // server is reachable. Fails silently (leaves changes pending) otherwise.
   if (!getPin()) return
@@ -15,4 +20,5 @@ onMounted(() => {
 
 <template>
   <RouterView />
+  <PerfDebugPanel />
 </template>

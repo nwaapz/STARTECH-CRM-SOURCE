@@ -13,7 +13,9 @@ import com.example.smsgateway.MassSmsFilterRequest
 import com.example.smsgateway.MassSmsQueueService
 import com.example.smsgateway.MassSmsRecipientResolver
 import com.example.smsgateway.PhoneUtils
+import com.example.smsgateway.ClubWelcomeSettings
 import com.example.smsgateway.ReferralSettings
+import com.example.smsgateway.RegistrationConfirmationSmsService
 import com.example.smsgateway.RegistrationSource
 import com.example.smsgateway.RegistrationFieldRules
 import com.example.smsgateway.RubikaApi
@@ -695,6 +697,36 @@ fun Application.configureLanRoutes(
                 }
             }
 
+            /**
+             * Repair registered rows with null/blank report dates.
+             * Local Room history first, then dedicated remote date lookup
+             * (does not run buffer get/send/backfill).
+             */
+            post("/serials/repair-null-dates") {
+                when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
+                    LanAccessResult.OK -> Unit
+                    else -> {
+                        LanAuth.reject(call, access)
+                        return@post
+                    }
+                }
+                val result = withContext(Dispatchers.IO) {
+                    com.example.smsgateway.cloud.NullDateRepairService
+                        .getInstance(appContext)
+                        .repair()
+                }
+                call.respond(
+                    RepairNullDatesResponse(
+                        ok = result.ok,
+                        scanned = result.scanned,
+                        fixedLocal = result.fixedLocal,
+                        fixedRemote = result.fixedRemote,
+                        unfixed = result.unfixed,
+                        message = result.message,
+                    ),
+                )
+            }
+
             post("/serials/{id}/send-completion-reminder") {
                 when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
                     LanAccessResult.OK -> Unit
@@ -800,6 +832,7 @@ fun Application.configureLanRoutes(
                 }
                 val cityTrim = body.city?.trim()?.takeIf { it.isNotEmpty() }
                 val kmValue = body.km?.takeIf { it >= 0 }
+                val phoneInput = body.phone?.trim()?.takeIf { it.isNotEmpty() }
 
                 val result = withContext(Dispatchers.IO) {
                     val dao = database.serialDao()
@@ -807,7 +840,12 @@ fun Application.configureLanRoutes(
                     if (!PhoneUtils.isRegisteredPhone(row.phone)) {
                         return@withContext UpdateSerialResult.NotRegistered
                     }
-                    val phone = row.phone!!
+                    val oldPhone = PhoneUtils.formatForDisplay(row.phone) ?: row.phone!!.trim()
+                    val normalizedPhone = phoneInput?.let { PhoneUtils.formatForDisplay(it) }
+                        ?: oldPhone
+                    if (!PhoneUtils.isRegisteredPhone(normalizedPhone)) {
+                        return@withContext UpdateSerialResult.InvalidPhone
+                    }
                     val normalizedDate = JalaliHelper.normalizeStoredDateTime(dateTrim)
                     val duplicate = dao.findBySerial(serialTrim)
                     if (duplicate != null && duplicate.id != id) {
@@ -823,6 +861,7 @@ fun Application.configureLanRoutes(
                     val updatedRows = dao.updateRegistrationById(
                         id = id,
                         serial = serialTrim,
+                        phone = normalizedPhone,
                         date = normalizedDate,
                         city = cityTrim,
                         km = kmValue,
@@ -831,14 +870,35 @@ fun Application.configureLanRoutes(
                     if (updatedRows == 0) {
                         return@withContext UpdateSerialResult.NotFound
                     }
-                    if (!oldSerial.equals(serialTrim, ignoreCase = true)) {
-                        database.serialPhotoSubmissionDao().updateSerialForPhone(
+                    val serialChanged = !oldSerial.equals(serialTrim, ignoreCase = true)
+                    val phoneChanged = !oldPhone.equals(normalizedPhone, ignoreCase = true)
+                    if (serialChanged || phoneChanged) {
+                        database.serialPhotoSubmissionDao().updateRegistrationLink(
                             oldSerial = oldSerial,
                             newSerial = serialTrim,
-                            phone = phone,
+                            oldPhone = oldPhone,
+                            newPhone = normalizedPhone,
                         )
                     }
                     val refreshed = dao.findById(id) ?: return@withContext UpdateSerialResult.NotFound
+                    val templates = SmsMessageTemplates.getInstance(settingsStore)
+                    try {
+                        RegistrationConfirmationSmsService.sendToPhone(
+                            context = appContext,
+                            row = refreshed,
+                            phone = normalizedPhone,
+                            templates = templates,
+                        )
+                    } catch (error: Exception) {
+                        LanTraceLog.e(
+                            TAG,
+                            "Registration SMS failed after reports save for serial ${refreshed.serial}",
+                            error,
+                        )
+                        return@withContext UpdateSerialResult.SmsFailed(
+                            error.message ?: "SMS send failed",
+                        )
+                    }
                     SyncEventWriter.getInstance(database).recordRegistrationUpdated(
                         serial = refreshed.serial,
                         phone = refreshed.phone.orEmpty(),
@@ -856,6 +916,10 @@ fun Application.configureLanRoutes(
                         call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "Ø§ÛŒÙ† Ø³Ø±ÛŒØ§Ù„ Ø«Ø¨Øª Ù†Ø´Ø¯Ù‡ Ø§Ø³Øª"))
                     UpdateSerialResult.DuplicateSerial ->
                         call.respond(HttpStatusCode.Conflict, ErrorResponse(error = "Ø³Ø±ÛŒØ§Ù„ ØªÚ©Ø±Ø§Ø±ÛŒ Ø§Ø³Øª"))
+                    UpdateSerialResult.InvalidPhone ->
+                        call.respond(HttpStatusCode.BadRequest, ErrorResponse(error = "Ø´Ù…Ø§Ø±Ù‡ Ù…ÙˆØ¨Ø§ÛŒÙ„ Ù†Ø§Ù…Ø¹ØªØ¨Ø± Ø§Ø³Øª"))
+                    is UpdateSerialResult.SmsFailed ->
+                        call.respond(HttpStatusCode.BadGateway, ErrorResponse(error = result.message))
                     is UpdateSerialResult.Success ->
                         call.respond(
                             result.row.toResponse(
@@ -2793,6 +2857,35 @@ fun Application.configureLanRoutes(
                 call.respond(settingsStore.getReferralSettings().toResponse())
             }
 
+            get("/settings/club-welcome") {
+                when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
+                    LanAccessResult.OK -> Unit
+                    else -> {
+                        LanAuth.reject(call, access)
+                        return@get
+                    }
+                }
+                call.respond(settingsStore.getClubWelcomeSettings().toResponse())
+            }
+
+            put("/settings/club-welcome") {
+                when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
+                    LanAccessResult.OK -> Unit
+                    else -> {
+                        LanAuth.reject(call, access)
+                        return@put
+                    }
+                }
+                val body = call.receive<ClubWelcomeSettingsResponse>()
+                settingsStore.setClubWelcomeSettings(
+                    ClubWelcomeSettings(
+                        enabled = body.enabled,
+                        message = body.message,
+                    ),
+                )
+                call.respond(settingsStore.getClubWelcomeSettings().toResponse())
+            }
+
             get("/referral/customers") {
                 when (val access = LanAuth.checkAccess(call, settingsStore, appContext)) {
                     LanAccessResult.OK -> Unit
@@ -3234,6 +3327,13 @@ private fun ReferralSettings.toResponse(): ReferralSettingsResponse {
     )
 }
 
+private fun ClubWelcomeSettings.toResponse(): ClubWelcomeSettingsResponse {
+    return ClubWelcomeSettingsResponse(
+        enabled = enabled,
+        message = message,
+    )
+}
+
 private suspend fun SerialEntity.toResponse(
     database: GatewayDatabase,
     @Suppress("UNUSED_PARAMETER") config: SmsProcessingConfig,
@@ -3298,6 +3398,8 @@ private sealed class UpdateSerialResult {
     data object NotFound : UpdateSerialResult()
     data object NotRegistered : UpdateSerialResult()
     data object DuplicateSerial : UpdateSerialResult()
+    data object InvalidPhone : UpdateSerialResult()
+    data class SmsFailed(val message: String) : UpdateSerialResult()
     data class Success(val row: SerialEntity) : UpdateSerialResult()
 }
 

@@ -24,6 +24,8 @@ const SW_MAX_SERIAL_LENGTH = 32;
 const SW_MIN_COMPLEX_LENGTH = 6;
 const SW_MAX_BATCH = 500000;
 const SW_CHUNK = 2000;
+/** Rows per committed INSERT. A killed request keeps every finished chunk. */
+const SW_INSERT_CHUNK = 200;
 const SW_COMPLEX_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 const SW_COMPLEX_DIGITS = '23456789';
 const SW_STOM_MCODE_SCORE = 10;
@@ -171,6 +173,19 @@ function sw_record_group_delete_tombstone(
 /** Ensure inventory columns used by remote serial generation exist. */
 function sw_ensure_columns(mysqli $conn, string $table): void
 {
+    static $done = [];
+    if (isset($done[$table])) {
+        return;
+    }
+    $done[$table] = true;
+    // Backfills below scan the whole serials table; claim the slot before running so
+    // parallel requests don't stack full-table UPDATEs on each other.
+    $cacheKey = 'sw_columns_' . $table . '_' . md5(__FILE__ . '|' . (string) @filemtime(__FILE__));
+    if (crm_cache_get($cacheKey, 3600) !== null) {
+        return;
+    }
+    crm_cache_set($cacheKey, ['at' => time()]);
+
     sw_ensure_serial_groups_table($conn);
     $adds = [
         'city' => "VARCHAR(100) DEFAULT NULL",
@@ -190,11 +205,14 @@ function sw_ensure_columns(mysqli $conn, string $table): void
             $conn->query("ALTER TABLE `$table` ADD COLUMN `$col` $def");
         }
     }
-    $idx = $conn->query("SHOW INDEX FROM `$table` WHERE Key_name = 'idx_old_serials_lan_group'");
-    if ($idx && $idx->num_rows === 0) {
-        @$conn->query("ALTER TABLE `$table` ADD INDEX idx_old_serials_lan_group (lan_group_id)");
-    }
+    crm_defer(static function () use ($conn, $table): void {
+        sw_run_full_table_backfills($conn, $table);
+    });
+}
 
+/** Full-table maintenance; always run deferred (after the response is sent). */
+function sw_run_full_table_backfills(mysqli $conn, string $table): void
+{
     // Backfill timestamps so unused + registered rows are pullable on first sync.
     // Invalid/zero MySQL dates make UNIX_TIMESTAMP NULL — fall back to row id.
     if (column_exists($conn, $table, 'sync_updated_ms')) {
@@ -209,7 +227,7 @@ function sw_ensure_columns(mysqli $conn, string $table): void
         // inventory before old registrations. Also fixes rows wrongly stamped with NOW().
         @$conn->query(
             "UPDATE `$table` SET sync_updated_ms = (1000000000000 + id)
-             WHERE (phone IS NULL OR TRIM(phone) = '')
+             WHERE (phone IS NULL OR phone = '')
                AND (
                  sync_updated_ms IS NULL OR sync_updated_ms = 0
                  OR sync_updated_ms > 1700000000000
@@ -417,7 +435,85 @@ function sw_existing_serials(mysqli $conn, string $table, array $serials): array
 }
 
 /**
+ * One committed multi-row INSERT IGNORE. Throws on failure; earlier chunks stay.
+ *
+ * @param string[] $chunk
+ */
+function sw_insert_serial_chunk(
+    mysqli $conn,
+    string $table,
+    array $chunk,
+    int $groupId,
+    string $category,
+    int $score,
+    ?int $warrantyMonths,
+    ?int $warrantyKm,
+    int $ivFlag,
+    ?string $city,
+    ?int $km,
+    ?string $description,
+    int $nowMs
+): int {
+    if ($chunk === []) {
+        return 0;
+    }
+    $rowSql = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'remote_panel', ?)";
+    $sql = "INSERT IGNORE INTO `$table`
+        (serial, category, score, warranty_months, warranty_km, image_verification_required,
+         city, km, description, lan_group_id, reg_source, sync_updated_ms)
+        VALUES " . implode(',', array_fill(0, count($chunk), $rowSql));
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        throw new RuntimeException('DB prepare failed: ' . $conn->error);
+    }
+    $types = str_repeat('ssiiiisisii', count($chunk));
+    $values = [];
+    foreach ($chunk as $serial) {
+        array_push(
+            $values,
+            $serial,
+            $category,
+            $score,
+            $warrantyMonths,
+            $warrantyKm,
+            $ivFlag,
+            $city,
+            $km,
+            $description,
+            $groupId,
+            $nowMs
+        );
+    }
+    // References must stay in this frame until execute(); bind_param stores them.
+    $refs = [];
+    foreach ($values as $i => $_) {
+        $refs[$i] = &$values[$i];
+    }
+    $stmt->bind_param($types, ...$refs);
+    $conn->begin_transaction();
+    try {
+        if (!$stmt->execute()) {
+            throw new RuntimeException('Insert failed: ' . $stmt->error);
+        }
+        $n = $stmt->affected_rows;
+        if (!$conn->commit()) {
+            throw new RuntimeException('Insert commit failed: ' . $conn->error);
+        }
+    } catch (Throwable $e) {
+        $conn->rollback();
+        $stmt->close();
+        throw $e;
+    }
+    $stmt->close();
+    return max(0, $n);
+}
+
+/**
+ * Insert serials in committed chunks. $afterChunk receives the running inserted
+ * count for this call after each commit (import uses it to publish end_number).
+ *
  * @param string[] $serials
+ * @param null|callable(int):void $afterChunk
  */
 function sw_insert_serials(
     mysqli $conn,
@@ -431,7 +527,8 @@ function sw_insert_serials(
     bool $imageVerification,
     ?string $city,
     ?int $km,
-    ?string $description
+    ?string $description,
+    ?callable $afterChunk = null
 ): int {
     if ($serials === []) {
         return 0;
@@ -440,46 +537,27 @@ function sw_insert_serials(
     $ivFlag = $imageVerification ? 1 : 0;
     $inserted = 0;
 
-    $sql = "INSERT IGNORE INTO `$table`
-        (serial, category, score, warranty_months, warranty_km, image_verification_required,
-         city, km, description, lan_group_id, reg_source, sync_updated_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'remote_panel', ?)";
-    $stmt = $conn->prepare($sql);
-    if (!$stmt) {
-        json_error('DB prepare failed: ' . $conn->error, 500);
-    }
-
-    $conn->begin_transaction();
-    try {
-        foreach ($serials as $serial) {
-            $stmt->bind_param(
-                'ssiiiisisii',
-                $serial,
-                $category,
-                $score,
-                $warrantyMonths,
-                $warrantyKm,
-                $ivFlag,
-                $city,
-                $km,
-                $description,
-                $groupId,
-                $nowMs
-            );
-            if (!$stmt->execute()) {
-                throw new RuntimeException('Insert failed: ' . $stmt->error);
-            }
-            $inserted += $stmt->affected_rows > 0 ? 1 : 0;
+    foreach (array_chunk(array_values($serials), SW_INSERT_CHUNK) as $chunk) {
+        $inserted += sw_insert_serial_chunk(
+            $conn,
+            $table,
+            $chunk,
+            $groupId,
+            $category,
+            $score,
+            $warrantyMonths,
+            $warrantyKm,
+            $ivFlag,
+            $city,
+            $km,
+            $description,
+            $nowMs
+        );
+        sw_mcode_preregister($conn, $chunk);
+        if ($afterChunk !== null) {
+            $afterChunk($inserted);
         }
-        $conn->commit();
-    } catch (Throwable $e) {
-        $conn->rollback();
-        $stmt->close();
-        json_error($e->getMessage(), 500);
     }
-    $stmt->close();
-
-    sw_mcode_preregister($conn, $serials);
 
     return $inserted;
 }
@@ -604,11 +682,17 @@ function sw_is_legacy_group_id(int $id): bool
  * Category buckets for inventory that has no remote group card
  * (the previous ~400k S/M serials that lived only in old_serials).
  */
-function sw_append_legacy_inventory_cards(mysqli $conn, string $table, array &$items): void
-{
+function sw_append_legacy_inventory_cards(
+    mysqli $conn,
+    string $table,
+    array &$items,
+    ?array $precomputedRows = null
+): void {
     $hasCategory = column_exists($conn, $table, 'category');
     $hasLan = column_exists($conn, $table, 'lan_group_id');
-    if (!$hasLan) {
+    if ($precomputedRows !== null) {
+        $res = new ArrayIterator($precomputedRows);
+    } elseif (!$hasLan) {
         // No lan_group_id column → treat entire table as legacy by category/all.
         if ($hasCategory) {
             $res = $conn->query(
@@ -650,8 +734,15 @@ function sw_append_legacy_inventory_cards(mysqli $conn, string $table, array &$i
     if (!$res) {
         return;
     }
+    if ($res instanceof mysqli_result) {
+        $rows = [];
+        while ($r = $res->fetch_assoc()) {
+            $rows[] = $r;
+        }
+        $res = $rows;
+    }
 
-    while ($row = $res->fetch_assoc()) {
+    foreach ($res as $row) {
         $total = (int) ($row['total'] ?? 0);
         if ($total <= 0) {
             continue;
@@ -687,6 +778,138 @@ function sw_append_legacy_inventory_cards(mysqli $conn, string $table, array &$i
     }
 }
 
+/**
+ * Per-group and legacy (ungrouped) serial counts from ONE table scan, fresh for 2 min.
+ * Older snapshots are served immediately and recomputed after the response; a changed
+ * serial_groups signature (card created/deleted) also triggers a refresh.
+ *
+ * @return array{groups:array<int,array{total:int,used:int}>,legacy:?list<array{category:string,total:int,used:int}>,cached?:bool}
+ */
+function sw_group_count_snapshot(mysqli $conn, string $table): array
+{
+    if (!column_exists($conn, $table, 'lan_group_id')) {
+        return ['groups' => [], 'legacy' => null];
+    }
+    $sig = '';
+    $r = $conn->query('SELECT COUNT(*) AS c, COALESCE(MAX(id), 0) AS m FROM serial_groups');
+    if ($r && ($row = $r->fetch_assoc())) {
+        $sig = $row['c'] . ':' . $row['m'];
+    }
+    $cacheKey = 'serial_group_counts_' . $table;
+    $lockKey = $cacheKey . '_refreshing';
+
+    $fresh = crm_cache_get($cacheKey, 120);
+    if (is_array($fresh) && isset($fresh['groups']) && ($fresh['sig'] ?? '') === $sig) {
+        return sw_group_snapshot_from_cache($fresh) + ['cached' => true];
+    }
+
+    // Full count scan takes ~1 min on this host: serve the last snapshot and refresh after
+    // the response. Only a cold cache (first run ever) scans synchronously.
+    $stale = crm_cache_get($cacheKey, 7 * 86400);
+    if (!is_array($stale)) {
+        $stale = crm_cache_get($cacheKey . '_' . md5($sig), 7 * 86400);
+    }
+    if (is_array($stale) && isset($stale['groups'])) {
+        if (crm_cache_get($lockKey, 600) === null) {
+            crm_cache_set($lockKey, ['at' => time()]);
+            crm_defer(static function () use ($conn, $table, $cacheKey, $lockKey, $sig): void {
+                sw_group_count_compute($conn, $table, $cacheKey, $sig);
+                crm_cache_delete($lockKey);
+            });
+        }
+        $snap = sw_group_snapshot_from_cache($stale);
+        if (($stale['sig'] ?? '') !== $sig) {
+            sw_group_counts_fill_missing($conn, $table, $snap['groups']);
+        }
+        return $snap + ['cached' => true];
+    }
+
+    return sw_group_count_compute($conn, $table, $cacheKey, $sig);
+}
+
+/** @return array{groups:array<int,array{total:int,used:int}>,legacy:list<array{category:string,total:int,used:int}>} */
+function sw_group_snapshot_from_cache(array $cached): array
+{
+    $groups = [];
+    foreach ($cached['groups'] as $gid => $c) {
+        $groups[(int) $gid] = ['total' => (int) ($c['total'] ?? 0), 'used' => (int) ($c['used'] ?? 0)];
+    }
+    return ['groups' => $groups, 'legacy' => $cached['legacy'] ?? []];
+}
+
+/** Count cards created since the cached snapshot (indexed by lan_group_id). */
+function sw_group_counts_fill_missing(mysqli $conn, string $table, array &$groups): void
+{
+    $ids = [];
+    $res = $conn->query('SELECT id FROM serial_groups');
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $gid = (int) $row['id'];
+            if (!isset($groups[$gid])) {
+                $ids[] = $gid;
+            }
+        }
+    }
+    if ($ids === []) {
+        return;
+    }
+    $reg = is_registered_sql();
+    $res = $conn->query(
+        "SELECT lan_group_id AS gid, COUNT(*) AS total, SUM(CASE WHEN $reg THEN 1 ELSE 0 END) AS used
+         FROM `$table` WHERE lan_group_id IN (" . implode(',', $ids) . ') GROUP BY lan_group_id'
+    );
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $groups[(int) $row['gid']] = ['total' => (int) $row['total'], 'used' => (int) $row['used']];
+        }
+    }
+}
+
+/** @return array{groups:array<int,array{total:int,used:int}>,legacy:list<array{category:string,total:int,used:int}>} */
+function sw_group_count_compute(mysqli $conn, string $table, string $cacheKey, string $sig): array
+{
+    $reg = is_registered_sql('t');
+    $catExpr = column_exists($conn, $table, 'category') ? 't.category' : "'end_user_client'";
+    $res = $conn->query(
+        "SELECT t.lan_group_id AS gid,
+                (g.id IS NULL) AS ungrouped,
+                $catExpr AS category,
+                COUNT(*) AS total,
+                SUM(CASE WHEN $reg THEN 1 ELSE 0 END) AS used
+         FROM `$table` t
+         LEFT JOIN serial_groups g ON g.id = t.lan_group_id
+         GROUP BY t.lan_group_id, (g.id IS NULL), $catExpr"
+    );
+    $groups = [];
+    $legacyByCat = [];
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $total = (int) $row['total'];
+            $used = (int) $row['used'];
+            if ((int) $row['ungrouped'] === 1) {
+                $cat = (string) ($row['category'] ?? '');
+                if (!isset($legacyByCat[$cat])) {
+                    $legacyByCat[$cat] = ['category' => $cat, 'total' => 0, 'used' => 0];
+                }
+                $legacyByCat[$cat]['total'] += $total;
+                $legacyByCat[$cat]['used'] += $used;
+            } else {
+                $gid = (int) $row['gid'];
+                if (!isset($groups[$gid])) {
+                    $groups[$gid] = ['total' => 0, 'used' => 0];
+                }
+                $groups[$gid]['total'] += $total;
+                $groups[$gid]['used'] += $used;
+            }
+        }
+    }
+    $legacy = array_values($legacyByCat);
+    if ($res) {
+        crm_cache_set($cacheKey, ['groups' => $groups, 'legacy' => $legacy, 'sig' => $sig]);
+    }
+    return ['groups' => $groups, 'legacy' => $legacy];
+}
+
 function sw_list_groups(mysqli $conn): void
 {
     $table = serials_table($conn);
@@ -697,22 +920,29 @@ function sw_list_groups(mysqli $conn): void
         json_error('Failed to list serial groups: ' . $conn->error, 500);
     }
 
+    $snapshot = sw_group_count_snapshot($conn, $table);
+    $countsByGroup = $snapshot['groups'] ?? [];
+    if (function_exists('crm_debug_mark')) {
+        crm_debug_mark(
+            'serial_groups_counts',
+            count($countsByGroup) . ' groups' . (!empty($snapshot['cached']) ? ' (cached)' : ' (scanned)')
+        );
+    }
+
     $items = [];
     while ($row = $res->fetch_assoc()) {
         $gid = (int) $row['id'];
-        $counts = $conn->query(
-            "SELECT COUNT(*) AS total,
-                    SUM(CASE WHEN " . is_registered_sql() . " THEN 1 ELSE 0 END) AS used
-             FROM `$table` WHERE lan_group_id = " . $gid
-        );
-        $c = $counts ? $counts->fetch_assoc() : null;
+        $c = $countsByGroup[$gid] ?? null;
         $total = (int) ($c['total'] ?? 0);
         $used = (int) ($c['used'] ?? 0);
         $items[] = sw_group_to_api($row, $total, $used);
     }
 
     // Keep the old category inventory cards for S/M stock that has no remote group.
-    sw_append_legacy_inventory_cards($conn, $table, $items);
+    sw_append_legacy_inventory_cards($conn, $table, $items, $snapshot['legacy'] ?? null);
+    if (function_exists('crm_debug_mark')) {
+        crm_debug_mark('serial_groups_list', count($items) . ' cards');
+    }
 
     json_out(['items' => $items]);
 }
@@ -1081,10 +1311,14 @@ function sw_handle_range(mysqli $conn, array $body): void
         'range', $wMonths, $wKm, $iv
     );
 
-    $inserted = sw_insert_serials(
-        $conn, $table, $serials, $groupId, $category, $score,
-        $wMonths, $wKm, $iv, $city, $km, $description
-    );
+    try {
+        $inserted = sw_insert_serials(
+            $conn, $table, $serials, $groupId, $category, $score,
+            $wMonths, $wKm, $iv, $city, $km, $description
+        );
+    } catch (Throwable $e) {
+        json_error($e->getMessage(), 500);
+    }
 
     if ($inserted <= 0) {
         sw_delete_group_row($conn, $groupId);
@@ -1283,10 +1517,14 @@ function sw_handle_complex(mysqli $conn, array $body): void
     );
 
     $serials = array_keys($accepted);
-    $inserted = sw_insert_serials(
-        $conn, $table, $serials, $groupId, $category, $score,
-        $wMonths, $wKm, $iv, $city, $km, $description
-    );
+    try {
+        $inserted = sw_insert_serials(
+            $conn, $table, $serials, $groupId, $category, $score,
+            $wMonths, $wKm, $iv, $city, $km, $description
+        );
+    } catch (Throwable $e) {
+        json_error($e->getMessage(), 500);
+    }
 
     if ($inserted <= 0) {
         sw_delete_group_row($conn, $groupId);
@@ -1314,8 +1552,55 @@ function sw_handle_complex(mysqli $conn, array $body): void
     ]);
 }
 
+function sw_count_group_serials(mysqli $conn, string $table, int $groupId): int
+{
+    $stmt = $conn->prepare("SELECT COUNT(*) AS c FROM `$table` WHERE lan_group_id = ?");
+    if (!$stmt) {
+        return 0;
+    }
+    $stmt->bind_param('i', $groupId);
+    if (!$stmt->execute()) {
+        $stmt->close();
+        return 0;
+    }
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    return (int) ($row['c'] ?? 0);
+}
+
+/**
+ * Load the serial_groups row serials are appended into. Any panel-created group
+ * (import, complex, range) is allowed; legacy synthetic cards are not real groups.
+ *
+ * @return array<string,mixed>
+ */
+function sw_load_append_group(mysqli $conn, int $groupId): array
+{
+    if (sw_is_legacy_group_id($groupId)) {
+        json_error('افزودن سریال به کارت موجودی قدیمی مجاز نیست.', 400);
+    }
+    sw_ensure_serial_groups_table($conn);
+    $stmt = $conn->prepare('SELECT * FROM serial_groups WHERE id = ? LIMIT 1');
+    if (!$stmt) {
+        json_error('DB prepare failed: ' . $conn->error, 500);
+    }
+    $stmt->bind_param('i', $groupId);
+    if (!$stmt->execute()) {
+        $err = $stmt->error;
+        $stmt->close();
+        json_error('DB execute failed: ' . $err, 500);
+    }
+    $row = $stmt->get_result()->fetch_assoc();
+    $stmt->close();
+    if (!$row) {
+        json_error('Group not found.', 404);
+    }
+    return $row;
+}
+
 function sw_handle_import(mysqli $conn, array $body): void
 {
+    @set_time_limit(120);
     $table = serials_table($conn);
     sw_ensure_columns($conn, $table);
 
@@ -1326,9 +1611,29 @@ function sw_handle_import(mysqli $conn, array $body): void
     if (count($rawSerials) > SW_MAX_BATCH) {
         json_error('Import exceeds maximum of ' . SW_MAX_BATCH . ' serials.', 400);
     }
-    $score = sw_require_score($body['score'] ?? 1);
-    $category = sw_require_category($body['category'] ?? '');
-    [$wMonths, $wKm] = sw_require_warranty($body['warrantyMonths'] ?? null, $body['warrantyKm'] ?? null);
+    // Appending into an existing card: every setting comes from that card so the
+    // new rows match the ones already in it. Otherwise the body defines a new card.
+    $appendGroupId = 0;
+    $appendGroup = null;
+    if (array_key_exists('groupId', $body) && $body['groupId'] !== null && $body['groupId'] !== '') {
+        $appendGroupId = (int) $body['groupId'];
+        if ($appendGroupId <= 0) {
+            json_error('Group not found.', 404);
+        }
+        $appendGroup = sw_load_append_group($conn, $appendGroupId);
+    }
+    if ($appendGroup !== null) {
+        $score = max(1, (int) ($appendGroup['score'] ?? 1));
+        $category = sw_require_category((string) ($appendGroup['category'] ?? ''));
+        $wMonths = isset($appendGroup['warranty_months']) && (int) $appendGroup['warranty_months'] > 0
+            ? (int) $appendGroup['warranty_months'] : null;
+        $wKm = isset($appendGroup['warranty_km']) && (int) $appendGroup['warranty_km'] > 0
+            ? (int) $appendGroup['warranty_km'] : null;
+    } else {
+        $score = sw_require_score($body['score'] ?? 1);
+        $category = sw_require_category($body['category'] ?? '');
+        [$wMonths, $wKm] = sw_require_warranty($body['warrantyMonths'] ?? null, $body['warrantyKm'] ?? null);
+    }
 
     $normalized = [];
     $invalid = [];
@@ -1376,35 +1681,73 @@ function sw_handle_import(mysqli $conn, array $body): void
     $skipped = $skippedInFile + $skippedExisting;
 
     if ($toInsert === []) {
-        json_error('No new serials to import — all ' . count($uniqueList) . ' were duplicates.', 400);
+        // An all-duplicate chunk is a normal outcome of a chunked upload (the client
+        // keeps sending the next slice), so it is a 200 with inserted = 0, not an error.
+        json_out([
+            'inserted' => 0,
+            'skipped' => $skipped,
+            'total' => $totalNormalized,
+            'groupId' => $appendGroupId > 0 ? $appendGroupId : null,
+            'allDuplicates' => true,
+        ]);
     }
 
-    $iv = (bool) ($body['imageVerificationRequired'] ?? false);
+    if ($appendGroup !== null) {
+        $iv = !empty($appendGroup['image_verification_required']);
+        $description = isset($appendGroup['description']) && trim((string) $appendGroup['description']) !== ''
+            ? trim((string) $appendGroup['description']) : null;
+    } else {
+        $iv = (bool) ($body['imageVerificationRequired'] ?? false);
+        $description = isset($body['description']) && trim((string) $body['description']) !== ''
+            ? trim((string) $body['description']) : null;
+    }
     $city = isset($body['city']) && trim((string) $body['city']) !== '' ? trim((string) $body['city']) : null;
     $km = isset($body['km']) && is_numeric($body['km']) ? (int) $body['km'] : null;
-    $description = isset($body['description']) && trim((string) $body['description']) !== ''
-        ? trim((string) $body['description']) : null;
 
     $maxLen = 0;
     foreach ($toInsert as $s) {
         $maxLen = max($maxLen, strlen($s));
     }
 
-    $groupId = sw_create_group(
-        $conn, SW_IMPORT_PREFIX, 0, count($toInsert), $maxLen, $description, $score, $category,
-        'import', $wMonths, $wKm, $iv
-    );
+    $createdHere = false;
+    // end_number is a row count only for import/complex cards; on range cards it is
+    // the range end and must not be rewritten when serials are appended.
+    $trackCount = $appendGroup === null
+        || in_array((string) ($appendGroup['generation_mode'] ?? ''), ['import', 'complex'], true);
+    if ($appendGroupId > 0) {
+        $groupId = $appendGroupId;
+        $baseline = sw_count_group_serials($conn, $table, $groupId);
+    } else {
+        $groupId = sw_create_group(
+            $conn, SW_IMPORT_PREFIX, 0, 0, $maxLen, $description, $score, $category,
+            'import', $wMonths, $wKm, $iv
+        );
+        $createdHere = true;
+        $baseline = 0;
+    }
 
-    $inserted = sw_insert_serials(
-        $conn, $table, $toInsert, $groupId, $category, $score,
-        $wMonths, $wKm, $iv, $city, $km, $description
-    );
+    $inserted = 0;
+    try {
+        $inserted = sw_insert_serials(
+            $conn, $table, $toInsert, $groupId, $category, $score,
+            $wMonths, $wKm, $iv, $city, $km, $description,
+            static function (int $soFar) use ($conn, $groupId, $baseline, $trackCount): void {
+                if ($trackCount) {
+                    sw_update_group_end($conn, $groupId, $baseline + $soFar);
+                }
+            }
+        );
+    } catch (Throwable $e) {
+        if ($createdHere && sw_count_group_serials($conn, $table, $groupId) === 0) {
+            sw_delete_group_row($conn, $groupId);
+        }
+        json_error($e->getMessage(), 500);
+    }
 
-    if ($inserted <= 0) {
+    if ($inserted <= 0 && $createdHere) {
         sw_delete_group_row($conn, $groupId);
         $groupId = 0;
-    } else {
-        sw_update_group_end($conn, $groupId, $inserted);
+    } elseif ($inserted > 0) {
         require_once __DIR__ . '/activity_store.php';
         crm_activity_record($conn, 'serials_added', [
             'inserted' => $inserted,
@@ -1419,6 +1762,6 @@ function sw_handle_import(mysqli $conn, array $body): void
         'inserted' => $inserted,
         'skipped' => $skipped,
         'total' => $totalNormalized,
-        'groupId' => $inserted > 0 ? $groupId : null,
+        'groupId' => $groupId > 0 ? $groupId : null,
     ]);
 }

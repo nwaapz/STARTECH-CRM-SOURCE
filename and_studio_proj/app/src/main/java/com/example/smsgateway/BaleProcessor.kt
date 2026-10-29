@@ -99,6 +99,15 @@ class BaleProcessor private constructor(
                     now = now,
                 )
             }
+            if (response.registrationSucceeded) {
+                runBlocking {
+                    RegistrationWelcomeSmsService.sendIfEnabled(
+                        appContext,
+                        knownPhone,
+                        response.registeredSerial,
+                    )
+                }
+            }
             if (response.firstRegistration && settingsStore.isBaleInviteEnabled()) {
                 sendInviteLink(token, chatId, knownPhone, now)
             }

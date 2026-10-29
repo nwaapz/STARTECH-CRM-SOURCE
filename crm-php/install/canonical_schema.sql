@@ -14,7 +14,14 @@ CREATE TABLE IF NOT EXISTS old_serials (
   lan_group_id BIGINT DEFAULT NULL,
   category VARCHAR(32) NOT NULL DEFAULT 'end_user_client',
   score INT NOT NULL DEFAULT 0,
-  UNIQUE KEY uq_old_serials_serial (serial)
+  UNIQUE KEY uq_old_serials_serial (serial),
+  KEY idx_serials_phone (phone),
+  KEY idx_serials_date_jalali (date_jalali(10)),
+  KEY idx_serials_reg_date (date_jalali, time),
+  KEY idx_serials_time (time),
+  KEY idx_serials_sync_updated_ms (sync_updated_ms),
+  KEY idx_serials_reg_source (reg_source),
+  KEY idx_serials_lan_group (lan_group_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS new_serials (

@@ -254,7 +254,7 @@ function ivResolveCodeMeta(string $serial): array
     if (isMprefixSerial($serial) || isSToMRange($serial)) {
         return [
             'code_type' => 'M',
-            'source_table' => isSToMRange($serial) ? 'old_serials' : 'Mcode',
+            'source_table' => 'old_serials',
             'confirm_column' => 'm',
         ];
     }
@@ -506,7 +506,19 @@ function computeOcrMatchScore(string $expectedSerial, string $detectedText): flo
 
 function ivGetMcodeTotalScore($conn, string $phone): int
 {
-    $stmt = $conn->prepare("SELECT COALESCE(SUM(score), 0) AS total FROM Mcode WHERE phone = ? AND phone != '0' AND score > 0");
+    $phone = preg_replace('/\D/', '', trim($phone));
+    if ($phone === '') {
+        return 0;
+    }
+    $hasCat = false;
+    $cols = @$conn->query("SHOW COLUMNS FROM `old_serials` LIKE 'category'");
+    if ($cols && $cols->num_rows > 0) {
+        $hasCat = true;
+    }
+    $sql = $hasCat
+        ? "SELECT COALESCE(SUM(score), 0) AS total FROM old_serials WHERE phone = ? AND phone != '0' AND score > 0 AND category = 'seller_to_end_user'"
+        : "SELECT COALESCE(SUM(score), 0) AS total FROM old_serials WHERE phone = ? AND phone != '0' AND score > 0";
+    $stmt = $conn->prepare($sql);
     if (!$stmt) {
         return 0;
     }
@@ -565,7 +577,7 @@ function ivRegistrationLotteryScore($conn, string $serial): int
 
 function ivGrantMcodeLotteryScore($conn, string $serial, string $phone): bool
 {
-    if (!isMprefixSerial($serial) || isSToMRange($serial)) {
+    if (!isMprefixSerial($serial) && !isSToMRange($serial)) {
         return false;
     }
     if ($phone === '' || $phone === '0') {
@@ -573,11 +585,12 @@ function ivGrantMcodeLotteryScore($conn, string $serial, string $phone): bool
     }
 
     $score = STOM_MCODE_SCORE;
-    $stmt = $conn->prepare('UPDATE Mcode SET score = ? WHERE serial = ? AND phone = ?');
+    $stmt = $conn->prepare('UPDATE old_serials SET score = GREATEST(IFNULL(score, 0), ?) WHERE UPPER(serial) = ? AND phone = ?');
     if (!$stmt) {
         return false;
     }
-    $stmt->bind_param('iss', $score, $serial, $phone);
+    $serialUp = strtoupper(trim($serial));
+    $stmt->bind_param('iss', $score, $serialUp, $phone);
     $ok = $stmt->execute() && $stmt->affected_rows > 0;
     $stmt->close();
 
@@ -590,10 +603,7 @@ function completeRegistrationAfterVerify($conn, array $row, string $verifiedBy):
     $phone = $row['phone'];
     $confirmColumn = $row['confirm_column'] ?? 'c';
 
-    if (isSToMRange($serial)) {
-        $city = $row['city'] ?? '';
-        syncSToMSerialToMcode($conn, $serial, $phone, $city);
-    } elseif (isMprefixSerial($serial)) {
+    if (isMprefixSerial($serial) || isSToMRange($serial)) {
         ivGrantMcodeLotteryScore($conn, $serial, $phone);
     }
 

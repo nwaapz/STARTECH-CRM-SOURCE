@@ -28,6 +28,8 @@ type GenerationTab = 'range' | 'complex' | 'import' | 'csv'
 const MAX_SERIAL_BATCH = 500_000
 /** Must match SerialStateCsv.MAX_ROWS on the Android gateway. */
 const MAX_CSV_STATE_ROWS = 750_000
+/** One HTTP request. The server commits these in smaller INSERT chunks. */
+const IMPORT_SLICE = 2_000
 
 const activeTab = ref<GenerationTab>('complex')
 
@@ -76,6 +78,10 @@ const importParsing = ref(false)
 const importLoading = ref(false)
 const importError = ref('')
 const importResult = ref('')
+const importGroupId = ref<number | null>(null)
+const importNextIndex = ref(0)
+const importCommittedInserted = ref(0)
+const importCommittedSkipped = ref(0)
 
 const csvFile = ref<File | null>(null)
 const csvFileName = ref('')
@@ -430,6 +436,13 @@ async function submitComplex() {
   }
 }
 
+function resetImportResume() {
+  importGroupId.value = null
+  importNextIndex.value = 0
+  importCommittedInserted.value = 0
+  importCommittedSkipped.value = 0
+}
+
 function clearImportFile() {
   importFileName.value = ''
   importSerials.value = []
@@ -437,6 +450,7 @@ function clearImportFile() {
   importEmptyRows.value = 0
   importError.value = ''
   importResult.value = ''
+  resetImportResume()
 }
 
 function clearCsvFile() {
@@ -451,6 +465,7 @@ async function onImportFileChange(event: Event) {
   const file = input.files?.[0]
   importResult.value = ''
   importError.value = ''
+  resetImportResume()
   if (!file) {
     clearImportFile()
     return
@@ -500,20 +515,49 @@ async function submitImport() {
     return
   }
   importLoading.value = true
+  const total = importSerials.value.length
   try {
-    const response = await createImportSerialBatch({
-      serials: importSerials.value,
-      description: importDescription.value || undefined,
-      score: importScore.value,
-      category: importCategory.value,
-      imageVerificationRequired: importImageVerificationRequired.value,
-      ...warrantyPayload(importWarrantyMonths.value, importWarrantyKm.value),
-    })
-    importResult.value =
-      `ثبت: ${response.inserted} • رد شده (تکراری): ${response.skipped} • خوانده‌شده: ${response.total}`
+    for (let i = importNextIndex.value; i < total; i += IMPORT_SLICE) {
+      const slice = importSerials.value.slice(i, i + IMPORT_SLICE)
+      const response = await createImportSerialBatch({
+        serials: slice,
+        ...(importGroupId.value != null ? { groupId: importGroupId.value } : {}),
+        description: importDescription.value || undefined,
+        score: importScore.value,
+        category: importCategory.value,
+        imageVerificationRequired: importImageVerificationRequired.value,
+        ...warrantyPayload(importWarrantyMonths.value, importWarrantyKm.value),
+      })
+      importCommittedInserted.value += response.inserted
+      importCommittedSkipped.value += response.skipped
+      if (response.groupId != null) {
+        importGroupId.value = response.groupId
+      }
+      importNextIndex.value = Math.min(i + slice.length, total)
+      importResult.value =
+        `بررسی‌شده: ${importNextIndex.value} از ${total} • ثبت شده: ${importCommittedInserted.value}` +
+        ` • تکراری: ${importCommittedSkipped.value}`
+    }
+    if (importCommittedInserted.value === 0) {
+      importError.value = `هیچ سریال جدیدی ثبت نشد — همه ${total} سریال از قبل موجود بودند`
+      importResult.value = ''
+    } else {
+      importResult.value =
+        `ثبت: ${importCommittedInserted.value} • رد شده (تکراری): ${importCommittedSkipped.value} • خوانده‌شده: ${total}`
+    }
+    resetImportResume()
     await loadGroups()
   } catch (e) {
-    importError.value = e instanceof Error ? e.message : 'خطا'
+    importError.value =
+      (e instanceof Error ? e.message : 'خطا') +
+      ' — برای ادامه از همان‌جا، دوباره روی «ورود سریال‌ها» بزنید'
+    if (importCommittedInserted.value > 0 || importNextIndex.value > 0) {
+      importResult.value =
+        `بررسی‌شده: ${importNextIndex.value} از ${total} • ثبت شده: ${importCommittedInserted.value}`
+    }
+    if (importGroupId.value != null) {
+      await loadGroups()
+    }
   } finally {
     importLoading.value = false
   }

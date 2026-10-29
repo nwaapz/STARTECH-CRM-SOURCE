@@ -10,6 +10,16 @@ function smsDebug($message)
     }
 }
 
+/** Answer the webhook immediately, then keep running long enough to send the reply SMS. */
+function smsDetachInboundRequest(): void
+{
+    ignore_user_abort(true);
+    @set_time_limit(90);
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    }
+}
+
 register_shutdown_function(function () {
     global $SMS_DEBUG, $smsDebugTrace;
     $err = error_get_last();
@@ -33,34 +43,59 @@ if (is_file(__DIR__ . '/jdf.php')) {
 }
 
 /**
- * On production, public_html/crm/ is the Vue SPA — NOT the PHP helpers.
- * Load helpers from sms_lib/ (upload next to SMS.php) or crm-php/crm/ in this repo.
+ * public_html/crm/ is the Vue SPA, not these helpers.
+ * serial-utils.php already lives next to SMS.php on the server.
+ * lottery-sync.php is optional: a missing file must not kill inbound SMS.
  */
-$smsLibCandidates = [
+$smsHelperDirs = [
+    __DIR__,
     __DIR__ . '/sms_lib',
     __DIR__ . '/crm-php/crm',
 ];
-$crmDir = null;
-foreach ($smsLibCandidates as $candidate) {
-    if (is_file($candidate . '/serial-utils.php') && is_file($candidate . '/lottery-sync.php')) {
-        $crmDir = $candidate;
-        break;
+$serialUtils = null;
+$lotterySync = null;
+$ivHelper = null;
+foreach ($smsHelperDirs as $candidate) {
+    if ($serialUtils === null && is_file($candidate . '/serial-utils.php')) {
+        $serialUtils = $candidate . '/serial-utils.php';
+    }
+    if ($lotterySync === null && is_file($candidate . '/lottery-sync.php') && is_file($candidate . '/serial-utils.php')) {
+        $lotterySync = $candidate . '/lottery-sync.php';
+    }
+    if ($ivHelper === null && is_file($candidate . '/image-verification-helper.php')) {
+        $ivHelper = $candidate . '/image-verification-helper.php';
     }
 }
-smsDebug('crmDir=' . ($crmDir ?: 'NOT FOUND'));
+smsDebug('serialUtils=' . ($serialUtils ?: 'NOT FOUND'));
+smsDebug('lotterySync=' . ($lotterySync ?: 'NOT FOUND'));
 
-if ($crmDir === null) {
-    error_log('[SMS.php] missing sms_lib (serial-utils.php / lottery-sync.php). Upload sms_lib/ next to SMS.php');
-    smsDebug('FATAL: upload sms_lib/ folder next to SMS.php (contains serial-utils.php, lottery-sync.php)');
-    if (!$SMS_DEBUG) {
-        http_response_code(500);
-        echo 'SMS bootstrap failed: missing sms_lib';
-    }
-    exit;
+if ($serialUtils !== null) {
+    require_once $serialUtils;
+}
+if ($lotterySync !== null) {
+    require_once $lotterySync;
+} else {
+    smsDebug('lottery-sync: skipped (file not found)');
 }
 
-require_once $crmDir . '/serial-utils.php';
-require_once $crmDir . '/lottery-sync.php';
+if (!function_exists('isMprefixSerial')) {
+    function isMprefixSerial($serial)
+    {
+        $serial = strtoupper(trim((string) $serial));
+        return $serial !== '' && $serial[0] === 'M';
+    }
+}
+if (!function_exists('isSToMRange')) {
+    function isSToMRange($serial)
+    {
+        $serial = strtoupper(trim((string) $serial));
+        if (!preg_match('/^S(\d+)$/', $serial, $m)) {
+            return false;
+        }
+        $num = (int) $m[1];
+        return $num >= 440000 && $num <= 450000;
+    }
+}
 
 // Older live sms_lib may predate seller helpers — define stubs so SMS never fatals.
 if (!function_exists('smsIsSellerCategory')) {
@@ -69,9 +104,18 @@ if (!function_exists('smsIsSellerCategory')) {
         return trim((string) $category) === 'seller_to_end_user';
     }
 }
+if (!function_exists('syncMcodeRegistrationToOldSerials')) {
+    function syncMcodeRegistrationToOldSerials($conn, $serial, $phone, $city = null, $score = null)
+    {
+        return false;
+    }
+}
 if (!function_exists('smsOldSerialIsSellerPipeline')) {
     function smsOldSerialIsSellerPipeline($serial, $row = null): bool
     {
+        if (function_exists('isMprefixSerial') && isMprefixSerial($serial)) {
+            return true;
+        }
         if (function_exists('isSToMRange') && isSToMRange($serial)) {
             return true;
         }
@@ -82,8 +126,7 @@ if (!function_exists('smsOldSerialIsSellerPipeline')) {
     }
 }
 
-$ivHelper = $crmDir . '/image-verification-helper.php';
-if (is_file($ivHelper)) {
+if ($ivHelper !== null && is_file($ivHelper)) {
     require_once $ivHelper;
     smsDebug('image-verification: loaded');
 } else {
@@ -208,6 +251,13 @@ if (empty($body)) {
     exit;
 }
 
+// Melipayamak closes the HTTP call as soon as it has a response. Without this,
+// PHP is aborted after the DB write and before the reply SOAP call finishes.
+// debug=1 stays attached so the browser can still show the trace.
+if (!$SMS_DEBUG) {
+    smsDetachInboundRequest();
+}
+
 // Check for Persian letters and digits (Persian or English)
 // Convert Persian digits to English digits in the body
 $body = convertPersianToEnglishDigits($body);
@@ -271,7 +321,8 @@ function smsSerialLookupCandidates($serial)
 }
 
 /**
- * Warranty tables that exist on this DB (old_serials / new_serials).
+ * Inbound SMS registers only against old_serials.
+ * new_serials is a separate stock and must not satisfy a lookup.
  * @return string[]
  */
 function smsWarrantyTables($conn)
@@ -281,19 +332,41 @@ function smsWarrantyTables($conn)
         return $tables;
     }
     $tables = [];
-    foreach (['old_serials', 'new_serials'] as $t) {
-        $check = @$conn->query("SHOW TABLES LIKE '" . $conn->real_escape_string($t) . "'");
-        if ($check && $check->num_rows > 0) {
-            $tables[] = $t;
-        }
+    $check = @$conn->query("SHOW TABLES LIKE 'old_serials'");
+    if ($check && $check->num_rows > 0) {
+        $tables[] = 'old_serials';
     }
     return $tables;
 }
 
 /**
- * Find unused/used warranty serial row created by panel (old_serials / new_serials).
+ * Find unused/used warranty serial row in old_serials.
  * Always returns the DB-stored serial string for later UPDATEs.
  */
+/**
+ * One SELECT ... WHERE <expr> IN (candidates) LIMIT 1.
+ * @param string[] $candidates
+ */
+function smsSelectSerialRow($conn, string $table, string $whereExpr, array $candidates)
+{
+    $placeholders = implode(',', array_fill(0, count($candidates), '?'));
+    $sql = "SELECT * FROM `$table` WHERE $whereExpr IN ($placeholders) LIMIT 1";
+    $stmt = $conn->prepare($sql);
+    if (!$stmt) {
+        return null;
+    }
+    $types = str_repeat('s', count($candidates));
+    $stmt->bind_param($types, ...$candidates);
+    if (!$stmt->execute()) {
+        $stmt->close();
+        return null;
+    }
+    $res = $stmt->get_result();
+    $row = $res ? $res->fetch_assoc() : null;
+    $stmt->close();
+    return is_array($row) ? $row : null;
+}
+
 function smsFindWarrantySerialRow($conn, $serial)
 {
     $candidates = smsSerialLookupCandidates($serial);
@@ -301,19 +374,14 @@ function smsFindWarrantySerialRow($conn, $serial)
         return null;
     }
     foreach (smsWarrantyTables($conn) as $table) {
-        $placeholders = implode(',', array_fill(0, count($candidates), '?'));
-        $sql = "SELECT * FROM `$table` WHERE UPPER(serial) IN ($placeholders) LIMIT 1";
-        $stmt = $conn->prepare($sql);
-        if (!$stmt) {
-            continue;
+        // Indexed lookup first: serials are stored uppercase and the column collation is
+        // case-insensitive, so this hits idx_serials_serial. UPPER(serial) can't use the
+        // index and scans the whole table (45 s for rows near the end) — only as a fallback.
+        $row = smsSelectSerialRow($conn, $table, 'serial', $candidates);
+        if ($row === null) {
+            $row = smsSelectSerialRow($conn, $table, 'UPPER(serial)', $candidates);
         }
-        $types = str_repeat('s', count($candidates));
-        $stmt->bind_param($types, ...$candidates);
-        $stmt->execute();
-        $res = $stmt->get_result();
-        $row = $res ? $res->fetch_assoc() : null;
-        $stmt->close();
-        if (is_array($row)) {
+        if ($row !== null) {
             $row['_table'] = $table;
             return $row;
         }
@@ -712,7 +780,7 @@ function smsRecordRegistrationError($conn, $phone, $serial, $reason)
 }
 
 
-// Check if there is Persian text (for city) and digits (for km) - for old_serials / new_serials
+// Check if there is Persian text (for city) and digits (for km) - for old_serials
 if (preg_match('/[\x{0600}-\x{06FF}]/u', $body) && preg_match('/[0-9\x{06F0}-\x{06F9}]/u', $body)) {
     // Extract Persian text (city) and digits (km)
     preg_match_all('/[\x{0600}-\x{06FF}]+/u', $body, $matchesCity);
@@ -729,11 +797,11 @@ if (preg_match('/[\x{0600}-\x{06FF}]/u', $body) && preg_match('/[0-9\x{06F0}-\x{
     }
     exit;
 } elseif (preg_match('/^[\x{0600}-\x{06FF}\s]+$/u', $body)) {
-    // Persian text only (city for M-codes) - no digits
+    // Persian text only (city for seller / M-codes) - no digits
     $city = trim($body);
     if (!empty($city)) {
         if (!SToM_City_confirm($city, $user, $conn)) {
-            Mcode_City_confirm($city, $user, $conn);
+            SendMessage($user, smsResolveMessage($conn, 'registration_session_missing', smsPortalValues()));
         }
     }
     exit;
@@ -743,78 +811,34 @@ if (preg_match('/[\x{0600}-\x{06FF}]/u', $body) && preg_match('/[0-9\x{06F0}-\x{
 $firstChar = substr($body, 0, 1);
 $serial = strtoupper(trim($body));
 
-if (isMprefixSerial($serial)) {
-    smsDebug('route: mcode_table');
-
-    $sql = "SELECT * FROM Mcode WHERE serial = ?";
-
-    if ($stmt = $conn->prepare($sql)) {
-        $stmt->bind_param("s", $serial);
-        $stmt->execute();
-        $result = $stmt->get_result();
-
-        if ($result->num_rows > 0) {
-            smsDebug('mcode: found in database');
-            Old_seller_register_existing_serial($serial, $user, $conn);
-            smsDebug('mcode: registration handler finished');
-        } else {
-            smsDebug('mcode: not found in database');
-            smsRecordRegistrationError($conn, $user, $serial, 'not_found');
-            SendMessage($user, smsResolveMessage($conn, 'serial_not_found', smsPortalValues()));
-        }
-
-        $stmt->close();
-    } else {
-        smsDebug('mcode: SQL prepare failed');
-        SendMessage($user, smsResolveMessage($conn, 'processing_error', smsPortalValues()));
+// All letter serials (M-prefix sellers, S440–S450, warranty) live in old_serials.
+if (ctype_alpha($firstChar) || preg_match('/^[A-Za-z]/', $serial) || isMprefixSerial($serial) || isSToMRange($serial)) {
+    $routeLabel = isMprefixSerial($serial) || isSToMRange($serial) ? 'seller_old_serials' : 'old_serials';
+    smsDebug('route: ' . $routeLabel);
+    if (isSToMRange($serial)) {
+        logSToMRouting($serial, $user, 'route_old_serials_as_mcode');
     }
-} elseif (isSToMRange($serial)) {
-    smsDebug('route: old_serials_as_mcode');
-    logSToMRouting($serial, $user, 'route_old_serials_as_mcode');
-
-    $sql = "SELECT * FROM old_serials WHERE UPPER(serial) = ?";
-    $stmt = $conn->prepare($sql);
-    $stmt->bind_param("s", $serial);
-    $stmt->execute();
-    $result = $stmt->get_result();
-
-    if ($result->num_rows > 0) {
-        $row = $result->fetch_assoc();
-        $dbSerial = $row['serial'];
-        if ($row['phone'] !== null && $row['phone'] !== '' && $row['phone'] !== '0') {
-            smsDebug('old_serials_as_mcode: already registered');
-            logSToMRouting($serial, $user, 'already_registered');
-            smsRecordRegistrationError($conn, $user, $dbSerial, 'already_used');
-            Client_Serial_has_been_registered($dbSerial, $row['phone']);
-            SendMessage($user, smsResolveMessage($conn, 'serial_already_used', smsPortalValues()));
-        } else {
-            smsDebug('old_serials_as_mcode: starting registration');
-            logSToMRouting($serial, $user, 'serial_found');
-            client_calling_for_unused_serial_as_mcode($dbSerial, $user, $conn);
-            smsDebug('old_serials_as_mcode: registration handler finished');
-        }
-    } else {
-        smsDebug('old_serials_as_mcode: not found in database');
-        logSToMRouting($serial, $user, 'serial_not_found');
-        smsRecordRegistrationError($conn, $user, $serial, 'not_found');
-        SendMessage($user, smsResolveMessage($conn, 'serial_not_found', smsPortalValues()));
-    }
-
-    $stmt->close();
-} elseif (ctype_alpha($firstChar) || preg_match('/^[A-Za-z]/', $serial)) {
-    smsDebug('route: old_serials');
     $row = smsFindWarrantySerialRow($conn, $serial);
     if ($row !== null) {
         $dbSerial = (string) $row['serial'];
         if ($row['phone'] !== null && $row['phone'] !== '' && $row['phone'] !== '0') {
+            if (isSToMRange($serial)) {
+                logSToMRouting($serial, $user, 'already_registered');
+            }
             smsRecordRegistrationError($conn, $user, $dbSerial, 'already_used');
             Client_Serial_has_been_registered($dbSerial, $row['phone']);
             SendMessage($user, smsResolveMessage($conn, 'serial_already_used', smsPortalValues()));
         } else {
+            if (isSToMRange($serial)) {
+                logSToMRouting($serial, $user, 'serial_found');
+            }
             client_calling_for_unused_serial($dbSerial, $user, $conn);
         }
     } else {
-        smsDebug('old_serials: not found serial=' . $serial);
+        smsDebug($routeLabel . ': not found serial=' . $serial);
+        if (isSToMRange($serial)) {
+            logSToMRouting($serial, $user, 'serial_not_found');
+        }
         smsRecordRegistrationError($conn, $user, $serial, 'not_found');
         SendMessage($user, smsResolveMessage($conn, 'serial_not_found', smsPortalValues()));
     }
@@ -829,11 +853,30 @@ if (isMprefixSerial($serial)) {
 }
 
 
+function smsValueToText($value): string
+{
+    if (is_string($value)) {
+        return $value;
+    }
+    if (is_int($value) || is_float($value)) {
+        return (string) $value;
+    }
+    if (is_bool($value)) {
+        return $value ? '1' : '0';
+    }
+    if ($value === null) {
+        return '';
+    }
+    $json = json_encode($value, JSON_UNESCAPED_UNICODE);
+    return $json === false ? '' : $json;
+}
+
 function SendMessage($phone, $message)
 {
     global $conn;
     $phone = smsNormalizePhone($phone);
-    if ($phone === '' || $message === null || $message === '') {
+    $message = smsValueToText($message);
+    if ($phone === '' || $message === '') {
         smsDebug('SendMessage skipped: empty phone/message');
         smsInboundLog('SendMessage skipped empty phone/message');
         return false;
@@ -855,15 +898,15 @@ function SendMessage($phone, $message)
             "isflash" => false,
         ];
         $result = $sms->SendSimpleSMS($data)->SendSimpleSMSResult;
-        $resultText = is_array($result) ? json_encode($result, JSON_UNESCAPED_UNICODE) : (string) $result;
+        $resultText = smsValueToText($result);
         smsDebug('SendMessage ok to=' . $phone . ' result=' . $resultText);
         smsInboundLog('SendMessage ok to=' . $phone . ' result=' . $resultText);
-        smsLogCommunication($conn ?? null, $phone, 'outgoing', (string) $message, 'sent');
+        smsLogCommunication($conn ?? null, $phone, 'outgoing', $message, 'sent');
         return true;
     } catch (Throwable $e) {
         smsDebug('SendMessage fail: ' . $e->getMessage());
         smsInboundLog('SendMessage fail: ' . $e->getMessage());
-        smsLogCommunication($conn ?? null, $phone, 'outgoing', (string) $message, 'failed');
+        smsLogCommunication($conn ?? null, $phone, 'outgoing', $message, 'failed');
         return false;
     }
 }
@@ -894,25 +937,28 @@ function smsLogCommunication($conn, $phone, $direction, $body, $status = 'sent')
 
 function getKnownCityForPhone($phone, $conn)
 {
-    $sql = "SELECT city FROM Mcode WHERE phone = ? AND city IS NOT NULL AND city != '' ORDER BY time DESC LIMIT 1";
-    $stmt = $conn->prepare($sql);
-    if (!$stmt) {
-        return null;
-    }
-    $stmt->bind_param("s", $phone);
-    $stmt->execute();
-    $result = $stmt->get_result();
-    $city = null;
-    if ($result && $row = $result->fetch_assoc()) {
-        $city = $row['city'];
-    }
-    $stmt->close();
-    return $city;
+    // City history lives on warranty tables (old_serials); Mcode is no longer used.
+    return getKnownCityFromOldSerials($phone, $conn);
 }
 
 function getMcodeTotalScore($phone, $conn)
 {
-    $sql = "SELECT COALESCE(SUM(score), 0) AS total FROM Mcode WHERE phone = ? AND phone != '0' AND score > 0";
+    $phone = smsNormalizePhone($phone);
+    if ($phone === '') {
+        return 0;
+    }
+    $hasScore = smsHasColumn($conn, 'old_serials', 'score');
+    if (!$hasScore) {
+        return 0;
+    }
+    if (smsHasColumn($conn, 'old_serials', 'category')) {
+        $sql = "SELECT COALESCE(SUM(score), 0) AS total FROM old_serials
+                WHERE phone = ? AND phone != '0' AND score > 0
+                  AND category = 'seller_to_end_user'";
+    } else {
+        $sql = "SELECT COALESCE(SUM(score), 0) AS total FROM old_serials
+                WHERE phone = ? AND phone != '0' AND score > 0";
+    }
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
         return 0;
@@ -990,86 +1036,9 @@ function seller_register_existing_serial($serial, $user, $conn)
 
 function Old_seller_register_existing_serial($serial, $phone, $conn)
 {
-    if (empty($serial) || empty($phone)) {
-        return "سریال یا شماره تلفن معتبر نیست.";
-    }
-
-    // Check if phone is already registered for this serial
-    $checkSql = "SELECT phone FROM Mcode WHERE serial = ?";
-    if ($checkStmt = $conn->prepare($checkSql)) {
-        $checkStmt->bind_param("s", $serial);
-        $checkStmt->execute();
-        $checkResult = $checkStmt->get_result();
-        if ($checkResult && $row = $checkResult->fetch_assoc()) {
-            if (!empty($row['phone']) && $row['phone'] !== '0') {
-                // Already registered
-                $message = smsResolveMessage($conn, 'serial_already_used', smsPortalValues());
-                SendMessage($phone, $message);
-                $checkStmt->close();
-                return $message;
-            }
-        }
-        $checkStmt->close();
-    }
-
-    // Send advertisement messages first (same flow as old_serials)
-    $sqlAd = "SELECT message FROM ad_sms";
-    $resultAd = mysqli_query($conn, $sqlAd);
-    if ($resultAd && mysqli_num_rows($resultAd) > 0) {
-        while ($row = mysqli_fetch_assoc($resultAd)) {
-            $message = $row['message'];
-            SendMessage($phone, $message);
-            sleep(4);
-        }
-    }
-
-    $knownCity = getKnownCityForPhone($phone, $conn);
-    $deferImage = isImageVerificationEnabledForSerial($conn, $serial);
-
-    if ($knownCity) {
-        $sql = "UPDATE Mcode SET phone = ?, time = NOW(), city = ?, score = ? WHERE serial = ?";
-        if ($stmt = $conn->prepare($sql)) {
-            $score = ivRegistrationLotteryScore($conn, $serial);
-            $stmt->bind_param("ssis", $phone, $knownCity, $score, $serial);
-            if ($stmt->execute() && $stmt->affected_rows > 0) {
-                $stmt->close();
-                if ($deferImage && maybeDeferRegistrationForImageVerify($conn, $serial, $phone, [
-                    'city' => $knownCity,
-                    'confirm_column' => 'm',
-                ])) {
-                    return "سریال ثبت شد. لینک تأیید تصویر ارسال شد.";
-                }
-                if ($deferImage) {
-                    ivGrantMcodeLotteryScore($conn, $serial, $phone);
-                }
-                SendConfirmSms($phone, $conn, 'm', true);
-                return "سریال با موفقیت ثبت شد، شهر از سابقه شناسایی شد.";
-            }
-            $stmt->close();
-            return "هیچ تغییری در اطلاعات فروشنده ایجاد نشد.";
-        }
-        return "خطا در برقراری ارتباط با پایگاه داده.";
-    }
-
-    $sql = "UPDATE Mcode SET phone = ?, time = NOW(), score = ? WHERE serial = ?";
-    if ($stmt = $conn->prepare($sql)) {
-        $score = ivRegistrationLotteryScore($conn, $serial);
-        $stmt->bind_param("sis", $phone, $score, $serial);
-
-        if ($stmt->execute()) {
-            if ($stmt->affected_rows > 0) {
-                $stmt->close();
-                sendMcodeSms($phone, smsResolveMessage($conn, 'seller_prompt_city'), $conn);
-                return "سریال با موفقیت ثبت شد، شماره تلفن و زمان به‌روز شدند.";
-            }
-            $stmt->close();
-            return "هیچ تغییری در اطلاعات فروشنده ایجاد نشد.";
-        }
-        $stmt->close();
-        return "خطا در بروزرسانی اطلاعات فروشنده.";
-    }
-
-    return "خطا در برقراری ارتباط با پایگاه داده.";
+    // Legacy name: M-prefix sellers now register only via old_serials.
+    register_seller_unused_serial($serial, $phone, $conn, 'old_serials');
+    return '';
 }
 
 
@@ -1121,6 +1090,15 @@ function client_calling_for_unused_serial($serial, $phone, $conn)
     }
     $stmtUpdate->close();
     smsRecordRegistrationActivity($conn, $phone, $serial);
+    smsMaybeSendClubWelcome($conn, $phone, $serial);
+
+    $sqlMainTpl = smsResolveMessage($conn, 'client_prompt_after_serial', [
+        '@1' => 'تبریز',
+        '@2' => '3350',
+    ]);
+    if ($sqlMainTpl !== '') {
+        SendMessage($phone, $sqlMainTpl);
+    }
 
     $sqlAd = "SELECT message FROM ad_sms";
     $resultAd = mysqli_query($conn, $sqlAd);
@@ -1132,62 +1110,76 @@ function client_calling_for_unused_serial($serial, $phone, $conn)
             sleep(4); // delay between messages
         }
     }
-
-    $sqlMainTpl = smsResolveMessage($conn, 'client_prompt_after_serial', [
-        '@1' => 'تبریز',
-        '@2' => '3350',
-    ]);
-    if ($sqlMainTpl !== '') {
-        SendMessage($phone, $sqlMainTpl);
-    }
 }
 
 /**
  * Seller registration: ads → inherit known city or ask city only (no km).
- * Legacy S440000–S450000 also mirrors into Mcode; category sellers stay in warranty tables.
+ * Writes only to old_serials / warranty tables (no Mcode).
  */
 function register_seller_unused_serial($serial, $phone, $conn, $table = 'old_serials')
 {
     $knownCity = getKnownCityFromOldSerials($phone, $conn);
-    if (!$knownCity) {
-        $knownCity = getKnownCityForPhone($phone, $conn);
-    }
 
     $currentTime = date("Y-m-d");
     $syncMs = (int) round(microtime(true) * 1000);
     $hasSync = smsHasColumn($conn, $table, 'sync_updated_ms');
-    $syncToMcode = isSToMRange($serial);
+    $hasScore = smsHasColumn($conn, $table, 'score');
+    $hasCategory = smsHasColumn($conn, $table, 'category');
+    $score = ivRegistrationLotteryScore($conn, $serial);
+    $category = 'seller_to_end_user';
 
     // Bind phone first so a city reply can find this session while ads are sending.
     if ($knownCity) {
-        if ($hasSync) {
-            $sqlUpdate = "UPDATE `$table` SET phone = ?, time = ?, city = ?, sync_updated_ms = ? WHERE serial = ?";
-            $stmtUpdate = $conn->prepare($sqlUpdate);
-            if ($stmtUpdate === false) {
-                exit;
-            }
-            $stmtUpdate->bind_param("sssis", $phone, $currentTime, $knownCity, $syncMs, $serial);
-        } else {
-            $sqlUpdate = "UPDATE `$table` SET phone = ?, time = ?, city = ? WHERE serial = ?";
-            $stmtUpdate = $conn->prepare($sqlUpdate);
-            if ($stmtUpdate === false) {
-                exit;
-            }
-            $stmtUpdate->bind_param("ssss", $phone, $currentTime, $knownCity, $serial);
+        $sets = ['phone = ?', 'time = ?', 'city = ?'];
+        $types = 'sss';
+        $params = [$phone, $currentTime, $knownCity];
+        if ($hasScore) {
+            $sets[] = 'score = GREATEST(IFNULL(score, 0), ?)';
+            $types .= 'i';
+            $params[] = $score;
         }
+        if ($hasCategory) {
+            $sets[] = 'category = ?';
+            $types .= 's';
+            $params[] = $category;
+        }
+        if ($hasSync) {
+            $sets[] = 'sync_updated_ms = ?';
+            $types .= 'i';
+            $params[] = $syncMs;
+        }
+        $types .= 's';
+        $params[] = $serial;
+        $sqlUpdate = "UPDATE `$table` SET " . implode(', ', $sets) . " WHERE serial = ?";
+        $stmtUpdate = $conn->prepare($sqlUpdate);
+        if ($stmtUpdate === false) {
+            exit;
+        }
+        // bind_param needs references
+        $bind = [$types];
+        foreach ($params as $k => $v) {
+            $bind[] = &$params[$k];
+        }
+        call_user_func_array([$stmtUpdate, 'bind_param'], $bind);
         if ($stmtUpdate->execute() && $stmtUpdate->affected_rows > 0) {
             $stmtUpdate->close();
             if (maybeDeferRegistrationForImageVerify($conn, $serial, $phone, [
                 'city' => $knownCity,
                 'confirm_column' => 'm',
             ])) {
-                smsRecordRegistrationActivity($conn, $phone, $serial, ['city' => $knownCity]);
+                smsRecordRegistrationActivity($conn, $phone, $serial, [
+                    'city' => $knownCity,
+                    '_table' => $table,
+                ]);
+                smsMaybeSendClubWelcome($conn, $phone, $serial);
                 return;
             }
-            smsRecordRegistrationActivity($conn, $phone, $serial, ['city' => $knownCity]);
-            if ($syncToMcode) {
-                syncSToMSerialToMcode($conn, $serial, $phone, $knownCity);
-            }
+            smsRecordRegistrationActivity($conn, $phone, $serial, [
+                'city' => $knownCity,
+                '_table' => $table,
+            ]);
+            smsMaybeSendClubWelcome($conn, $phone, $serial);
+            SendConfirmSms($phone, $conn, 'm');
             $sqlAd = "SELECT message FROM ad_sms";
             $resultAd = mysqli_query($conn, $sqlAd);
             if ($resultAd && mysqli_num_rows($resultAd) > 0) {
@@ -1196,38 +1188,51 @@ function register_seller_unused_serial($serial, $phone, $conn, $table = 'old_ser
                     sleep(4);
                 }
             }
-            SendConfirmSms($phone, $conn, 'm');
             return;
         }
         $stmtUpdate->close();
     }
 
-    if ($hasSync) {
-        $sqlUpdate = "UPDATE `$table` SET phone = ?, time = ?, sync_updated_ms = ? WHERE serial = ?";
-        $stmtUpdate = $conn->prepare($sqlUpdate);
-        if ($stmtUpdate === false) {
-            exit;
-        }
-        $stmtUpdate->bind_param("ssis", $phone, $currentTime, $syncMs, $serial);
-    } else {
-        $sqlUpdate = "UPDATE `$table` SET phone = ?, time = ? WHERE serial = ?";
-        $stmtUpdate = $conn->prepare($sqlUpdate);
-        if ($stmtUpdate === false) {
-            exit;
-        }
-        $stmtUpdate->bind_param("sss", $phone, $currentTime, $serial);
+    $sets = ['phone = ?', 'time = ?'];
+    $types = 'ss';
+    $params = [$phone, $currentTime];
+    if ($hasScore) {
+        $sets[] = 'score = GREATEST(IFNULL(score, 0), ?)';
+        $types .= 'i';
+        $params[] = $score;
     }
+    if ($hasCategory) {
+        $sets[] = 'category = ?';
+        $types .= 's';
+        $params[] = $category;
+    }
+    if ($hasSync) {
+        $sets[] = 'sync_updated_ms = ?';
+        $types .= 'i';
+        $params[] = $syncMs;
+    }
+    $types .= 's';
+    $params[] = $serial;
+    $sqlUpdate = "UPDATE `$table` SET " . implode(', ', $sets) . " WHERE serial = ?";
+    $stmtUpdate = $conn->prepare($sqlUpdate);
+    if ($stmtUpdate === false) {
+        exit;
+    }
+    $bind = [$types];
+    foreach ($params as $k => $v) {
+        $bind[] = &$params[$k];
+    }
+    call_user_func_array([$stmtUpdate, 'bind_param'], $bind);
     if (!$stmtUpdate->execute()) {
         $stmtUpdate->close();
         exit;
     }
     $stmtUpdate->close();
 
-    smsRecordRegistrationActivity($conn, $phone, $serial);
-    if ($syncToMcode && !isImageVerificationEnabledForSerial($conn, $serial)) {
-        syncSToMSerialToMcode($conn, $serial, $phone);
-    }
+    smsRecordRegistrationActivity($conn, $phone, $serial, ['_table' => $table]);
+    smsMaybeSendClubWelcome($conn, $phone, $serial);
 
+    SendMessage($phone, smsResolveMessage($conn, 'seller_prompt_city'));
     $sqlAd = "SELECT message FROM ad_sms";
     $resultAd = mysqli_query($conn, $sqlAd);
     if ($resultAd && mysqli_num_rows($resultAd) > 0) {
@@ -1236,7 +1241,6 @@ function register_seller_unused_serial($serial, $phone, $conn, $table = 'old_ser
             sleep(4);
         }
     }
-    SendMessage($phone, smsResolveMessage($conn, 'seller_prompt_city'));
 }
 
 function getKnownCityFromOldSerials($phone, $conn)
@@ -1294,9 +1298,6 @@ function SToM_City_confirm($city, $phone, $conn)
     ])) {
         return true;
     }
-    if (isSToMRange($serial)) {
-        syncSToMSerialToMcode($conn, $serial, $phone, $city);
-    }
     SendConfirmSms($phone, $conn, 'm');
     return true;
 }
@@ -1335,9 +1336,6 @@ function Client_Km_City_confirm($km, $city, $phone, $conn)
         ])) {
             return;
         }
-        if (isSToMRange($serial)) {
-            syncSToMSerialToMcode($conn, $serial, $phone, $city);
-        }
         SendConfirmSms($phone, $conn, 'm');
         return;
     }
@@ -1375,6 +1373,7 @@ function SendConfirmSms($phone, $conn, $column = 'c', $appendScore = null)
     }
 
     if ($message === '') {
+        smsInboundLog('SendConfirmSms skipped: empty template column=' . $column . ' phone=' . smsNormalizePhone($phone));
         return;
     }
 
@@ -1388,55 +1387,116 @@ function SendConfirmSms($phone, $conn, $column = 'c', $appendScore = null)
     SendMessage($phone, $message);
 }
 
-function Mcode_City_confirm($city, $phone, $conn)
+/**
+ * Second SMS after warranty confirm (باشگاه مشتریان → club_welcome_settings).
+ * Self-contained: must not include crm-php/api/bootstrap.php (that file is a JSON API
+ * bootstrap and would break this Melipayamak GET webhook).
+ */
+function smsMaybeSendClubWelcome($conn, $phone, $serial = null)
 {
-    $sql = "SELECT * FROM Mcode WHERE phone = ? AND (city IS NULL OR city = '') ORDER BY time DESC LIMIT 1";
-    $stmt = $conn->prepare($sql);
-    if ($stmt === false) {
-        exit;
+    if (!$conn) {
+        return;
     }
-
-    $stmt->bind_param("s", $phone);
-
-    if (!$stmt->execute()) {
-        $stmt->close();
-        exit;
-    }
-
-    $result = $stmt->get_result();
-    if ($result && $row = $result->fetch_assoc()) {
-        $serial = $row['serial'];
-        $updateSql = "UPDATE Mcode SET city = ? WHERE serial = ?";
-        $stmtUpdate = $conn->prepare($updateSql);
-
-        if ($stmtUpdate === false) {
-            $stmt->close();
-            exit;
-        }
-
-        $stmtUpdate->bind_param("ss", $city, $serial);
-
-        if (!$stmtUpdate->execute()) {
-            $stmtUpdate->close();
-            $stmt->close();
-            exit;
-        }
-
-        $stmtUpdate->close();
-        $stmt->close();
-        $deferImage = isImageVerificationEnabledForSerial($conn, $serial);
-        if ($deferImage && maybeDeferRegistrationForImageVerify($conn, $serial, $phone, [
-            'city' => $city,
-            'confirm_column' => 'm',
-        ])) {
+    try {
+        $phoneNorm = smsNormalizePhone($phone);
+        if ($phoneNorm === '') {
+            smsDebug('club welcome skipped: empty phone');
             return;
         }
-        if ($deferImage) {
-            ivGrantMcodeLotteryScore($conn, $serial, $phone);
+        $res = @$conn->query(
+            "SELECT setting_value FROM crm_settings WHERE setting_key = 'club_welcome_settings' LIMIT 1"
+        );
+        if (!$res) {
+            smsDebug('club welcome skipped: crm_settings missing or unreadable');
+            smsInboundLog('club welcome: no crm_settings row');
+            return;
         }
-        SendConfirmSms($phone, $conn, 'm');
-    } else {
+        $settingRow = $res->fetch_assoc();
+        if (!$settingRow) {
+            smsDebug('club welcome skipped: settings not saved yet');
+            return;
+        }
+        $decoded = json_decode((string) ($settingRow['setting_value'] ?? ''), true);
+        if (!is_array($decoded) || empty($decoded['enabled'])) {
+            smsDebug('club welcome skipped: disabled');
+            return;
+        }
+        $template = trim((string) ($decoded['message'] ?? ''));
+        if ($template === '') {
+            smsDebug('club welcome skipped: empty message');
+            return;
+        }
+        $row = smsFindClubWelcomeSerialRow($conn, $phoneNorm, $serial);
+        if (!$row) {
+            smsDebug('club welcome skipped: no serial row for ' . $phoneNorm);
+            smsInboundLog('club welcome: no serial row for ' . $phoneNorm);
+            return;
+        }
+        $serialVal = (string) ($row['serial'] ?? '');
+        $kmVal = '';
+        if (isset($row['km']) && $row['km'] !== null && $row['km'] !== '') {
+            $kmVal = (string) (int) $row['km'];
+        }
+        $dateVal = trim((string) ($row['date_jalali'] ?? ''));
+        if ($dateVal === '') {
+            $dateVal = trim((string) ($row['time'] ?? $row['date'] ?? ''));
+        }
+        $body = str_replace(
+            ['{سریال}', '{serial}', '{کیلومتر}', '{km}', '{تاریخ}', '{date}'],
+            [$serialVal, $serialVal, $kmVal, $kmVal, $dateVal, $dateVal],
+            $template
+        );
+        if (trim($body) === '') {
+            return;
+        }
+        smsDebug('club welcome send to=' . $phoneNorm . ' serial=' . $serialVal);
+        smsInboundLog('club welcome send to=' . $phoneNorm . ' serial=' . $serialVal);
+        SendMessage($phoneNorm, $body);
+    } catch (Throwable $e) {
+        smsDebug('club welcome error: ' . $e->getMessage());
+        smsInboundLog('club welcome error: ' . $e->getMessage());
+    }
+}
+
+function smsFindClubWelcomeSerialRow($conn, $phoneNorm, $serial = null)
+{
+    $serialKey = $serial !== null ? strtoupper(trim((string) $serial)) : '';
+    foreach (['old_serials', 'new_serials'] as $table) {
+        if ($serialKey !== '') {
+            $stmt = $conn->prepare("SELECT * FROM `$table` WHERE UPPER(serial) = ? LIMIT 1");
+            if ($stmt) {
+                $stmt->bind_param('s', $serialKey);
+                $stmt->execute();
+                $result = $stmt->get_result();
+                $row = $result ? $result->fetch_assoc() : null;
+                $stmt->close();
+                if ($row) {
+                    return $row;
+                }
+            }
+        }
+        $stmt = $conn->prepare(
+            "SELECT * FROM `$table` WHERE phone = ? ORDER BY id DESC LIMIT 1"
+        );
+        if (!$stmt) {
+            continue;
+        }
+        $stmt->bind_param('s', $phoneNorm);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $row = $result ? $result->fetch_assoc() : null;
         $stmt->close();
+        if ($row) {
+            return $row;
+        }
+    }
+    return null;
+}
+
+/** @deprecated Mcode table no longer used; seller city confirm goes through SToM_City_confirm / old_serials. */
+function Mcode_City_confirm($city, $phone, $conn)
+{
+    if (!SToM_City_confirm($city, $phone, $conn)) {
         SendMessage($phone, smsResolveMessage($conn, 'registration_session_missing', smsPortalValues()));
     }
 }

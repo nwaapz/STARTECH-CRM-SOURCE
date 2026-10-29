@@ -92,23 +92,21 @@ function sre_list_clients(mysqli $conn, int $page, int $limit): array
     }
 
     $sql = "SELECT
-                e.phone AS phone,
-                MAX(e.at_ms) AS latestAt,
-                (
-                    SELECT serial FROM serial_registration_errors e2
-                    WHERE e2.phone = e.phone
-                    ORDER BY e2.at_ms DESC, e2.id DESC
-                    LIMIT 1
+                phone,
+                MAX(at_ms) AS latestAt,
+                SUBSTRING_INDEX(
+                    GROUP_CONCAT(serial ORDER BY at_ms DESC, id DESC SEPARATOR '\n'),
+                    '\n',
+                    1
                 ) AS latestSerial,
-                (
-                    SELECT reason FROM serial_registration_errors e2
-                    WHERE e2.phone = e.phone
-                    ORDER BY e2.at_ms DESC, e2.id DESC
-                    LIMIT 1
+                SUBSTRING_INDEX(
+                    GROUP_CONCAT(reason ORDER BY at_ms DESC, id DESC SEPARATOR '\n'),
+                    '\n',
+                    1
                 ) AS latestReason,
                 COUNT(*) AS attemptCount
-            FROM serial_registration_errors e
-            GROUP BY e.phone
+            FROM serial_registration_errors
+            GROUP BY phone
             ORDER BY latestAt DESC
             LIMIT ? OFFSET ?";
     $stmt = $conn->prepare($sql);

@@ -9,10 +9,19 @@ import type {
   SerialGroup,
   SerialGroupCategory,
 } from '@/api/types'
-import { extendSerialGroupRange, fetchSerialGroupSerials, updateSerialGroup } from '@/api/client'
+import {
+  createImportSerialBatch,
+  extendSerialGroupRange,
+  fetchSerialGroupSerials,
+  updateSerialGroup,
+} from '@/api/client'
 import { isDuplicateSerialError } from '@/api/types'
 import { formatDateTimeFa } from '@/utils/formatCommunication'
 import { downloadSerialsAsExcel } from '@/utils/exportSerialsXlsx'
+import { parseSerialsFromExcelFile } from '@/utils/parseExcelSerials'
+
+/** One HTTP request. The server commits these in smaller INSERT chunks. */
+const APPEND_SLICE = 2_000
 import {
   findLinkedWarrantyRules,
   loadClubAutoRules,
@@ -70,6 +79,18 @@ const addBelow = ref<number | ''>('')
 const addAbove = ref<number | ''>('')
 const newStart = ref<number | ''>('')
 const newEnd = ref<number | ''>('')
+
+const appendFileName = ref('')
+const appendSerials = ref<string[]>([])
+const appendInvalidSample = ref<string[]>([])
+const appendParsing = ref(false)
+const appendLoading = ref(false)
+const appendNextIndex = ref(0)
+const appendInserted = ref(0)
+const appendSkipped = ref(0)
+const appendProgress = ref('')
+const appendError = ref('')
+const appendInputKey = ref(0)
 
 const warrantyEndEnabled = ref(false)
 const warrantyPreEnabled = ref(false)
@@ -204,6 +225,97 @@ function toggleEdit() {
   editing.value = !editing.value
   if (editing.value) {
     resetForm(props.group)
+  } else if (!appendLoading.value) {
+    clearAppendFile()
+  }
+}
+
+function clearAppendFile() {
+  appendFileName.value = ''
+  appendSerials.value = []
+  appendInvalidSample.value = []
+  appendNextIndex.value = 0
+  appendInserted.value = 0
+  appendSkipped.value = 0
+  appendProgress.value = ''
+  appendError.value = ''
+  appendInputKey.value += 1
+}
+
+async function onAppendFileChange(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  clearAppendFile()
+  if (!file) return
+  appendParsing.value = true
+  try {
+    const parsed = await parseSerialsFromExcelFile(file)
+    appendFileName.value = parsed.fileName
+    appendSerials.value = parsed.serials
+    appendInvalidSample.value = parsed.invalidRows
+    if (parsed.serials.length === 0) {
+      appendError.value = 'در ستون اول هیچ سریال معتبری یافت نشد'
+    }
+  } catch (e) {
+    appendError.value = e instanceof Error ? e.message : 'خطا در خواندن فایل اکسل'
+  } finally {
+    appendParsing.value = false
+  }
+}
+
+/**
+ * Sends the parsed list in slices; the server skips serials already in the DB and
+ * reports inserted = 0 for an all-duplicate slice, so the loop always runs to the end.
+ * A failed slice keeps its offset so pressing the button again resumes from there.
+ */
+async function submitAppend() {
+  const total = appendSerials.value.length
+  if (total === 0) {
+    appendError.value = 'ابتدا یک فایل اکسل انتخاب کنید'
+    return
+  }
+  appendError.value = ''
+  appendLoading.value = true
+  try {
+    for (let i = appendNextIndex.value; i < total; i += APPEND_SLICE) {
+      const slice = appendSerials.value.slice(i, i + APPEND_SLICE)
+      const response = await createImportSerialBatch({
+        serials: slice,
+        groupId: props.group.id,
+      })
+      appendInserted.value += response.inserted
+      appendSkipped.value += response.skipped
+      appendNextIndex.value = Math.min(i + slice.length, total)
+      appendProgress.value =
+        `بررسی‌شده: ${appendNextIndex.value} از ${total} • افزوده‌شده: ${appendInserted.value}` +
+        ` • تکراری: ${appendSkipped.value}`
+    }
+    const inserted = appendInserted.value
+    appendProgress.value =
+      `پایان — افزوده‌شده: ${inserted} • تکراری (نادیده گرفته شد): ${appendSkipped.value} • خوانده‌شده: ${total}`
+    if (inserted > 0) {
+      emit('updated', {
+        ...props.group,
+        total: props.group.total + inserted,
+        unused: props.group.unused + inserted,
+        salePercentage:
+          props.group.total + inserted > 0
+            ? Math.round((1000 * props.group.used) / (props.group.total + inserted)) / 10
+            : 0,
+        endNumber: isRangeGroup.value ? props.group.endNumber : props.group.endNumber + inserted,
+      })
+    }
+    appendSerials.value = []
+    appendNextIndex.value = 0
+    appendInputKey.value += 1
+  } catch (e) {
+    appendError.value =
+      (e instanceof Error ? e.message : 'خطا') +
+      ' — برای ادامه از همان‌جا، دوباره روی «افزودن به گروه» بزنید'
+    appendProgress.value =
+      `بررسی‌شده: ${appendNextIndex.value} از ${total} • افزوده‌شده: ${appendInserted.value}`
+  } finally {
+    appendLoading.value = false
   }
 }
 
@@ -525,10 +637,57 @@ async function saveExtend() {
       </div>
       <p v-else class="hint">گروه‌های تصادفی و وارداتی قابل توسعه بازه‌ای نیستند.</p>
 
+      <div class="group-edit-section">
+        <h4>افزودن سریال از اکسل</h4>
+        <p class="hint">
+          ستون اول فایل خوانده می‌شود. سریال‌هایی که از قبل در سیستم هستند نادیده گرفته می‌شوند و
+          فقط سریال‌های جدید با تنظیمات همین گروه اضافه می‌شوند.
+        </p>
+        <label>
+          فایل اکسل
+          <input
+            :key="appendInputKey"
+            type="file"
+            accept=".xlsx,.xls,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel,text/csv"
+            :disabled="appendParsing || appendLoading"
+            @change="onAppendFileChange"
+          />
+        </label>
+        <p v-if="appendParsing" class="hint">در حال خواندن فایل...</p>
+        <p v-else-if="appendFileName" class="hint">
+          فایل: {{ appendFileName }} • سریال معتبر: {{ appendSerials.length }}
+          <span v-if="appendInvalidSample.length">
+            • نمونه نامعتبر: {{ appendInvalidSample.join('، ') }}
+          </span>
+        </p>
+        <p v-if="appendProgress" class="hint">{{ appendProgress }}</p>
+        <p v-if="appendError" class="error">{{ appendError }}</p>
+        <div class="group-card-actions">
+          <button
+            type="button"
+            class="primary"
+            :disabled="appendLoading || appendParsing || appendSerials.length === 0"
+            @click="submitAppend"
+          >
+            {{ appendLoading ? 'در حال افزودن...' : 'افزودن به گروه' }}
+          </button>
+          <button
+            type="button"
+            class="secondary"
+            :disabled="appendLoading || (!appendFileName && appendSerials.length === 0)"
+            @click="clearAppendFile"
+          >
+            پاک کردن فایل
+          </button>
+        </div>
+      </div>
+
       <p v-if="error" class="error">{{ error }}</p>
 
       <div class="group-card-actions">
-        <button type="button" class="secondary" @click="toggleEdit">بستن</button>
+        <button type="button" class="secondary" :disabled="appendLoading" @click="toggleEdit">
+          بستن
+        </button>
         <button
           type="button"
           class="danger"

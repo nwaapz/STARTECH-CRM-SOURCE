@@ -189,6 +189,7 @@ data class ExtendSerialGroupRangeResponseBody(
 data class UpdateSerialRegistrationRequest(
     val serial: String,
     val date: String,
+    val phone: String? = null,
     val city: String? = null,
     val km: Int? = null,
 )
@@ -942,6 +943,12 @@ data class ReferralSettingsResponse(
 )
 
 @Serializable
+data class ClubWelcomeSettingsResponse(
+    val enabled: Boolean = false,
+    val message: String = "",
+)
+
+@Serializable
 data class ReferralCustomerResponse(
     val phone: String,
     val referralCode: String,
@@ -1111,5 +1118,15 @@ data class CloudSyncConfigRequest(
 @Serializable
 data class OkResponse(
     val ok: Boolean = true,
+    val message: String? = null,
+)
+
+@Serializable
+data class RepairNullDatesResponse(
+    val ok: Boolean = true,
+    val scanned: Int = 0,
+    val fixedLocal: Int = 0,
+    val fixedRemote: Int = 0,
+    val unfixed: Int = 0,
     val message: String? = null,
 )

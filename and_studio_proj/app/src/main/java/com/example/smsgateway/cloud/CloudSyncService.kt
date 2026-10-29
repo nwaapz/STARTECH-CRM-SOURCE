@@ -166,7 +166,7 @@ class CloudSyncService(context: Context) {
         } catch (e: CancellationException) {
             setProgress(running = false, phase = "error", percent = 0, detail = "Cancelled")
             throw e
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             Log.w(TAG, "backfill request failed", e)
             val msg = e.message ?: "Backfill request failed"
             setProgress(running = false, phase = "error", percent = 0, detail = msg)
@@ -264,7 +264,7 @@ class CloudSyncService(context: Context) {
             } catch (e: CancellationException) {
                 setProgress(running = false, phase = "error", percent = 0, detail = "Cancelled")
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.w(TAG, "push failed", e)
                 val msg = e.message ?: "Push failed"
                 setProgress(running = false, phase = "error", percent = 0, detail = msg)
@@ -416,7 +416,7 @@ class CloudSyncService(context: Context) {
             } catch (e: CancellationException) {
                 setProgress(running = false, phase = "error", percent = 0, detail = "Cancelled")
                 throw e
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 Log.w(TAG, "pull failed", e)
                 val msg = e.message ?: "Pull failed"
                 setProgress(running = false, phase = "error", percent = 0, detail = msg)
@@ -503,15 +503,36 @@ class CloudSyncService(context: Context) {
             detail = "Applying ${remoteToApply.size} remote changes…",
             applyRowsTotal = remoteToApply.size,
         )
+        var applyFailures = 0
         for ((idx, entry) in remoteToApply.withIndex()) {
-            applyRemoteEntryLocally(entry)
-            setProgress(
-                running = true,
-                phase = "apply",
-                percent = 40 + ((idx + 1) * 40) / remoteToApply.size.coerceAtLeast(1),
-                applyRowsDone = idx + 1,
-                applyRowsTotal = remoteToApply.size,
-            )
+            try {
+                applyRemoteEntryLocally(entry)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                applyFailures++
+                Log.w(
+                    TAG,
+                    "apply failed for ${entry.type}/${entry.entryId}: ${e.message}",
+                    e,
+                )
+            }
+            // Throttle UI progress updates — flooding StateFlow on every row can ANR/crash Compose.
+            val done = idx + 1
+            if (done == remoteToApply.size || done % 25 == 0) {
+                setProgress(
+                    running = true,
+                    phase = "apply",
+                    percent = 40 + (done * 40) / remoteToApply.size.coerceAtLeast(1),
+                    applyRowsDone = done,
+                    applyRowsTotal = remoteToApply.size,
+                    detail = if (applyFailures > 0) {
+                        "Applying $done/${remoteToApply.size} ($applyFailures failed)…"
+                    } else {
+                        "Applying $done/${remoteToApply.size}…"
+                    },
+                )
+            }
         }
         if (remoteAckIds.isNotEmpty()) {
             ackRemote(base, token, remoteAckIds.distinct())
@@ -925,37 +946,43 @@ class CloudSyncService(context: Context) {
     }
 
     private fun showConflictNotification(count: Int) {
-        val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(
-                    CONFLICT_CHANNEL_ID,
-                    appContext.getString(R.string.settings_cloud_sync_conflict_channel),
-                    NotificationManager.IMPORTANCE_HIGH,
-                ),
+        try {
+            val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                nm.createNotificationChannel(
+                    NotificationChannel(
+                        CONFLICT_CHANNEL_ID,
+                        appContext.getString(R.string.settings_cloud_sync_conflict_channel),
+                        NotificationManager.IMPORTANCE_HIGH,
+                    ),
+                )
+            }
+            val intent = Intent(appContext, MainActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                putExtra(EXTRA_OPEN_SYNC_CONFLICTS, true)
+            }
+            val pi = PendingIntent.getActivity(
+                appContext,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
+            // Must be a white-on-transparent status-bar icon — mipmap launcher icons
+            // make the system kill the app with RemoteServiceException on many devices.
+            val notification = NotificationCompat.Builder(appContext, CONFLICT_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_sync_notification)
+                .setContentTitle(appContext.getString(R.string.settings_cloud_sync_conflict_title))
+                .setContentText(
+                    appContext.getString(R.string.settings_cloud_sync_conflict_body, count),
+                )
+                .setContentIntent(pi)
+                .setAutoCancel(true)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .build()
+            nm.notify(CONFLICT_NOTIFICATION_ID, notification)
+        } catch (e: Throwable) {
+            Log.w(TAG, "conflict notification failed", e)
         }
-        val intent = Intent(appContext, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            putExtra(EXTRA_OPEN_SYNC_CONFLICTS, true)
-        }
-        val pi = PendingIntent.getActivity(
-            appContext,
-            0,
-            intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
-        )
-        val notification = NotificationCompat.Builder(appContext, CONFLICT_CHANNEL_ID)
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentTitle(appContext.getString(R.string.settings_cloud_sync_conflict_title))
-            .setContentText(
-                appContext.getString(R.string.settings_cloud_sync_conflict_body, count),
-            )
-            .setContentIntent(pi)
-            .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .build()
-        nm.notify(CONFLICT_NOTIFICATION_ID, notification)
     }
 
     private fun cancelConflictNotification() {

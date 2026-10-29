@@ -5,7 +5,7 @@ import SerialTable from '@/components/SerialTable.vue'
 import SerialRowEditModal from '@/components/SerialRowEditModal.vue'
 import JalaliDateSelects from '@/components/JalaliDateSelects.vue'
 import UiSwitch from '@/components/UiSwitch.vue'
-import { fetchMassSmsProvinces, fetchSerialGroups, fetchSerials, sendCompletionReminder } from '@/api/client'
+import { fetchMassSmsProvinces, fetchSerialGroups, fetchSerials, repairNullDates, sendCompletionReminder } from '@/api/client'
 import type {
   IranProvince,
   RegistrationSource,
@@ -16,6 +16,7 @@ import type {
 import { formatPhoneForDisplay } from '@/utils/formatPhone'
 import { provinceById } from '@/data/iranProvinces'
 import { ensurePersianPdfFont, preparePersianPdfText } from '@/utils/persianPdf'
+import { perfPageNote } from '@/utils/perfDebug'
 
 const SERIAL_CATEGORY_OPTIONS: { value: SerialGroupCategory; label: string }[] = [
   { value: 'end_user_client', label: 'مشتری نهایی' },
@@ -47,7 +48,10 @@ const total = ref(0)
 const items = ref<SerialRow[]>([])
 const loading = ref(false)
 const exporting = ref(false)
+const repairingDates = ref(false)
 const error = ref('')
+const repairFeedback = ref('')
+const repairFeedbackOk = ref(true)
 const sendingReminderId = ref<number | null>(null)
 const editingRow = ref<SerialRow | null>(null)
 const editModalOpen = ref(false)
@@ -197,6 +201,8 @@ async function load() {
     error.value = groupSelectionError.value
     return
   }
+  const t0 = performance.now()
+  perfPageNote('Reports load() start')
   loading.value = true
   error.value = ''
   try {
@@ -207,8 +213,10 @@ async function load() {
     })
     items.value = response.items
     total.value = response.total
+    perfPageNote(`Reports load() done ${Math.round(performance.now() - t0)}ms (${response.items.length}/${response.total})`)
   } catch (e) {
     error.value = e instanceof Error ? e.message : 'خطا'
+    perfPageNote(`Reports load() failed ${Math.round(performance.now() - t0)}ms`)
   } finally {
     loading.value = false
   }
@@ -259,6 +267,25 @@ async function runSearch() {
   page.value = 1
   lastSearchUsedDefaultEnd.value = !toDate.value
   await load()
+}
+
+async function runRepairNullDates() {
+  repairingDates.value = true
+  error.value = ''
+  repairFeedback.value = ''
+  try {
+    const result = await repairNullDates()
+    repairFeedbackOk.value = result.ok
+    repairFeedback.value =
+      result.message ??
+      `اصلاح شد: محلی ${result.fixedLocal}، سرور ${result.fixedRemote}`
+    await load()
+  } catch (e) {
+    repairFeedbackOk.value = false
+    repairFeedback.value = e instanceof Error ? e.message : 'خطا در اصلاح تاریخ‌های خالی'
+  } finally {
+    repairingDates.value = false
+  }
 }
 
 async function handleSendReminder(row: SerialRow) {
@@ -384,6 +411,7 @@ function nextPage() {
 }
 
 onMounted(() => {
+  perfPageNote('Reports mounted')
   void loadProvinces()
   void loadGroups()
   void load()
@@ -521,28 +549,44 @@ onMounted(() => {
           </template>
         </section>
         <div class="actions">
-          <button class="primary" :disabled="loading || exporting" @click="runSearch">جستجو</button>
+          <button class="primary" :disabled="loading || exporting || repairingDates" @click="runSearch">
+            جستجو
+          </button>
           <button
             class="secondary"
-            :disabled="loading || exporting || total === 0"
+            :disabled="loading || exporting || repairingDates"
+            @click="runRepairNullDates"
+          >
+            {{ repairingDates ? 'در حال اصلاح تاریخ…' : 'اصلاح تاریخ‌های خالی' }}
+          </button>
+          <button
+            class="secondary"
+            :disabled="loading || exporting || repairingDates || total === 0"
             @click="exportCsv"
           >
             {{ exporting ? 'در حال آماده‌سازی...' : 'خروجی CSV' }}
           </button>
           <button
             class="secondary"
-            :disabled="loading || exporting || total === 0"
+            :disabled="loading || exporting || repairingDates || total === 0"
             @click="exportPdf"
           >
             {{ exporting ? 'در حال آماده‌سازی...' : 'خروجی PDF' }}
           </button>
         </div>
         <p v-if="error" class="error">{{ error }}</p>
+        <p
+          v-if="repairFeedback"
+          class="hint"
+          :class="repairFeedbackOk ? 'repair-ok' : 'error'"
+        >
+          {{ repairFeedback }}
+        </p>
         <p class="hint">
           {{ dateRangeHint }} — مکان: {{ locationHint }} — منبع: {{ sourceHint }} — نوع مشتری:
           {{ categoryHint }} — گروه: {{ groupHint }} — نتایج: {{ total }} — صفحه {{ page }}
         </p>
-        <p class="hint row-edit-hint">برای ویرایش سریال، تاریخ، شهر یا کیلومتر روی هر ردیف کلیک کنید.</p>
+        <p class="hint row-edit-hint">برای ویرایش سریال، تلفن، تاریخ، شهر یا کیلومتر روی هر ردیف کلیک کنید.</p>
         <SerialTable
           :items="items"
           show-reminder-actions
@@ -759,5 +803,9 @@ onMounted(() => {
   margin-top: -0.35rem;
   color: #1565c0;
   font-weight: 600;
+}
+
+.repair-ok {
+  color: #2e7d32;
 }
 </style>

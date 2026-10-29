@@ -548,6 +548,19 @@ class SettingsStore(context: Context) {
 
     fun isReferralEnabled(): Boolean = prefs.getBoolean(KEY_REFERRAL_ENABLED, false)
 
+    fun getClubWelcomeSettings(): ClubWelcomeSettings = ClubWelcomeSettings(
+        enabled = prefs.getBoolean(KEY_CLUB_WELCOME_ENABLED, false),
+        message = prefs.getString(KEY_CLUB_WELCOME_MESSAGE, "").orEmpty(),
+    ).normalized()
+
+    fun setClubWelcomeSettings(settings: ClubWelcomeSettings) {
+        val normalized = settings.normalized()
+        prefs.edit()
+            .putBoolean(KEY_CLUB_WELCOME_ENABLED, normalized.enabled)
+            .putString(KEY_CLUB_WELCOME_MESSAGE, normalized.message)
+            .apply()
+    }
+
     fun getLotteryPresetPhone(): String =
         prefs.getString(KEY_LOTTERY_PRESET_PHONE, "").orEmpty().trim()
 
@@ -804,6 +817,8 @@ class SettingsStore(context: Context) {
         private const val KEY_REFERRAL_BASE_POINTS = "referral_base_points"
         private const val KEY_REFERRAL_DECAY_PERCENT = "referral_decay_percent"
         private const val KEY_REFERRAL_MAX_DEPTH = "referral_max_depth"
+        private const val KEY_CLUB_WELCOME_ENABLED = "club_welcome_enabled"
+        private const val KEY_CLUB_WELCOME_MESSAGE = "club_welcome_message"
         private const val KEY_LOTTERY_PRESET_PHONE = "lottery_preset_phone"
         private const val KEY_CLOUD_SYNC_URL = "cloud_sync_url"
         private const val KEY_CLOUD_SYNC_TOKEN = "cloud_sync_token"

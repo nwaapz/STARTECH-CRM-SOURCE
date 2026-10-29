@@ -2,6 +2,7 @@ package com.example.smsgateway
 
 import android.content.Context
 import com.example.smsgateway.lan.LanTraceLog
+import kotlinx.coroutines.runBlocking
 import java.util.concurrent.ConcurrentHashMap
 
 class SmsProcessor(private val context: Context) {
@@ -62,6 +63,15 @@ class SmsProcessor(private val context: Context) {
                 simLabel = simLabel,
                 timestamp = now,
             )
+            if (response.registrationSucceeded) {
+                runBlocking {
+                    RegistrationWelcomeSmsService.sendIfEnabled(
+                        appContext,
+                        sender,
+                        response.registeredSerial,
+                    )
+                }
+            }
             if (response.registrationSucceeded || response.firstRegistration || response.imageVerificationRequired) {
                 maybeSendBotInvites(
                     sender = sender,

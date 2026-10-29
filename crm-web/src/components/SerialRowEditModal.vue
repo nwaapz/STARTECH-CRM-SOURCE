@@ -2,13 +2,18 @@
 import { computed, ref, watch } from 'vue'
 import { fetchMassSmsProvinces, updateSerialRow } from '@/api/client'
 import type { IranProvince, RegistrationSource, SerialRow } from '@/api/types'
-import { formatPhoneForDisplay } from '@/utils/formatPhone'
+import {
+  formatPhoneForDisplay,
+  isValidIranianMobile,
+  normalizePhoneInput,
+} from '@/utils/formatPhone'
 import { provinceById } from '@/data/iranProvinces'
 import {
   JALALI_MONTH_NAMES,
   currentJalaliYear,
   jalaliDaysInMonth,
   parseJalaliParts,
+  todayJalaliDate,
   toLatinDigits,
 } from '@/utils/jalali'
 
@@ -24,6 +29,7 @@ const emit = defineEmits<{
 
 const provinces = ref<IranProvince[]>([])
 const editSerial = ref('')
+const editPhone = ref('')
 const editYear = ref<number | null>(null)
 const editMonth = ref<number | null>(null)
 const editDay = ref<number | null>(null)
@@ -121,41 +127,54 @@ function clampTimePart(value: string, max: number): string {
   return String(num).padStart(2, '0')
 }
 
-function findProvinceForCity(city: string): string {
-  const normalized = city.trim()
-  if (!normalized) return ''
-  for (const province of provinces.value) {
-    if (province.cities.some((c) => c === normalized)) {
-      return province.id
-    }
-  }
-  return ''
+const savedCity = computed(() => (props.row?.city ?? '').trim())
+
+function rowIsUnregistered(row: SerialRow): boolean {
+  const phone = (row.phone ?? '').trim()
+  return phone === '' || phone === '0'
+}
+
+function applyCurrentRegistrationDate() {
+  const dateParts = parseJalaliParts(todayJalaliDate())
+  editYear.value = dateParts?.year ?? null
+  editMonth.value = dateParts?.month ?? null
+  editDay.value = dateParts?.day ?? null
+  const now = new Date()
+  editHour.value = String(now.getHours()).padStart(2, '0')
+  editMinute.value = String(now.getMinutes()).padStart(2, '0')
+  editSecond.value = String(now.getSeconds()).padStart(2, '0')
 }
 
 function resetForm() {
   if (!props.row) return
   editSerial.value = props.row.serial
-  const parsed = parseDateTime(props.row.date)
-  const dateParts = parseJalaliParts(parsed.date)
-  editYear.value = dateParts?.year ?? null
-  editMonth.value = dateParts?.month ?? null
-  editDay.value = dateParts?.day ?? null
-  editHour.value = parsed.hour
-  editMinute.value = parsed.minute
-  editSecond.value = parsed.second
+  editPhone.value = formatPhoneForDisplay(props.row.phone)
+  if (rowIsUnregistered(props.row)) {
+    applyCurrentRegistrationDate()
+  } else {
+    const parsed = parseDateTime(props.row.date)
+    const dateParts = parseJalaliParts(parsed.date)
+    editYear.value = dateParts?.year ?? null
+    editMonth.value = dateParts?.month ?? null
+    editDay.value = dateParts?.day ?? null
+    editHour.value = parsed.hour
+    editMinute.value = parsed.minute
+    editSecond.value = parsed.second
+  }
   editCity.value = props.row.city ?? ''
   editKm.value = props.row.km != null ? String(props.row.km) : ''
-  const matchedProvince = findProvinceForCity(editCity.value)
-  if (matchedProvince) {
-    provinceId.value = matchedProvince
-    cityFromList.value = editCity.value
-    useCityList.value = true
-  } else {
+  provinceId.value = ''
+  cityFromList.value = ''
+  useCityList.value = false
+  error.value = ''
+}
+
+function switchCityMode() {
+  if (!useCityList.value) {
     provinceId.value = ''
     cityFromList.value = ''
-    useCityList.value = false
   }
-  error.value = ''
+  useCityList.value = !useCityList.value
 }
 
 async function loadProvinces() {
@@ -192,12 +211,17 @@ async function save() {
     error.value = 'سریال الزامی است'
     return
   }
+  const phone = normalizePhoneInput(editPhone.value)
+  if (!isValidIranianMobile(phone)) {
+    error.value = 'شماره موبایل نامعتبر است'
+    return
+  }
   if (!composedDate.value) {
     error.value = 'تاریخ الزامی است'
     return
   }
-  const kmRaw = editKm.value.trim()
-  const km = kmRaw ? Number.parseInt(kmRaw, 10) : null
+  const kmRaw = String(editKm.value ?? '').trim()
+  const km = kmRaw !== '' ? Number.parseInt(kmRaw, 10) : null
   if (kmRaw && (km == null || Number.isNaN(km) || km < 0)) {
     error.value = 'کیلومتر نامعتبر است'
     return
@@ -208,6 +232,7 @@ async function save() {
   try {
     const updated = await updateSerialRow(props.row.id, {
       serial,
+      phone,
       date: buildDateTime(),
       city: resolvedCity() || null,
       km,
@@ -218,12 +243,6 @@ async function save() {
     error.value = e instanceof Error ? e.message : 'خطا در ذخیره'
   } finally {
     saving.value = false
-  }
-}
-
-function handleOverlayClick(event: MouseEvent) {
-  if (event.target === event.currentTarget) {
-    emit('close')
   }
 }
 
@@ -251,26 +270,15 @@ watch([editYear, editMonth], () => {
   }
 })
 
-watch(provinceId, () => {
+watch(provinceId, (next, prev) => {
+  if (next === prev) return
   cityFromList.value = ''
-})
-
-watch(cityFromList, (value) => {
-  if (useCityList.value && value) {
-    editCity.value = value
-  }
-})
-
-watch(useCityList, (enabled) => {
-  if (enabled && cityFromList.value) {
-    editCity.value = cityFromList.value
-  }
-})
+}, { flush: 'post' })
 </script>
 
 <template>
   <Teleport to="body">
-    <div v-if="open && row" class="modal-overlay" @click="handleOverlayClick">
+    <div v-if="open && row" class="modal-overlay">
       <div
         class="modal-panel serial-edit-panel"
         role="dialog"
@@ -281,7 +289,7 @@ watch(useCityList, (enabled) => {
         <div class="serial-edit-header">
           <div>
             <p class="serial-edit-eyebrow">ویرایش ثبت مشتری</p>
-            <h2 id="serial-edit-title">{{ formatPhoneForDisplay(row.phone) }}</h2>
+            <h2 id="serial-edit-title">{{ row.serial }}</h2>
           </div>
           <button type="button" class="modal-close" aria-label="بستن" @click="emit('close')">
             ×
@@ -298,6 +306,21 @@ watch(useCityList, (enabled) => {
             <label class="field-label">
               سریال
               <input v-model="editSerial" type="text" class="serial-input" autocomplete="off" />
+            </label>
+          </div>
+
+          <div class="field-card">
+            <label class="field-label">
+              تلفن
+              <input
+                v-model="editPhone"
+                type="tel"
+                inputmode="tel"
+                class="phone-input"
+                autocomplete="off"
+                placeholder="مثال: 09121234567"
+                dir="ltr"
+              />
             </label>
           </div>
 
@@ -368,12 +391,13 @@ watch(useCityList, (enabled) => {
               <button
                 type="button"
                 class="city-mode-btn"
-                @click="useCityList = !useCityList"
+                @click="switchCityMode"
               >
                 {{ useCityList ? 'ورود دستی' : 'انتخاب از لیست' }}
               </button>
             </div>
             <template v-if="useCityList">
+              <p v-if="savedCity" class="saved-city">شهر ذخیره‌شده: {{ savedCity }}</p>
               <label class="field-label">
                 استان
                 <select v-model="provinceId">
@@ -523,6 +547,11 @@ watch(useCityList, (enabled) => {
   letter-spacing: 0.04em;
 }
 
+.phone-input {
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+}
+
 .date-row {
   display: grid;
   grid-template-columns: 1.1fr 1.3fr 1fr;
@@ -570,6 +599,16 @@ watch(useCityList, (enabled) => {
 
 .city-mode-row .field-group-title {
   margin: 0;
+}
+
+.saved-city {
+  margin: 0 0 0.65rem;
+  padding: 0.45rem 0.65rem;
+  border-radius: 8px;
+  background: #eceff1;
+  color: #37474f;
+  font-size: 0.86rem;
+  font-weight: 600;
 }
 
 .city-mode-btn {

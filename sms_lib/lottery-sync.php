@@ -87,3 +87,124 @@ function resetSToMSerialsForPhone($conn, $phone)
 
     return $affected;
 }
+
+/**
+ * Mirror an M-prefix registration from Mcode into old_serials (seller inventory).
+ * Inserts the serial if missing; updates phone/city/time/score when present.
+ */
+function syncMcodeRegistrationToOldSerials($conn, $serial, $phone, $city = null, $score = null)
+{
+    $serial = strtoupper(trim((string) $serial));
+    if ($serial === '' || !isMprefixSerial($serial)) {
+        return false;
+    }
+    if ($phone === null || trim((string) $phone) === '' || trim((string) $phone) === '0') {
+        return false;
+    }
+    $phone = trim((string) $phone);
+    $cityVal = ($city !== null && trim((string) $city) !== '') ? trim((string) $city) : '';
+    $scoreVal = $score !== null ? (int) $score : (defined('STOM_MCODE_SCORE') ? (int) STOM_MCODE_SCORE : 10);
+    $syncMs = (int) round(microtime(true) * 1000);
+    $timeVal = date('Y-m-d');
+    $category = 'seller_to_end_user';
+
+    $tables = @$conn->query("SHOW TABLES LIKE 'old_serials'");
+    if (!$tables || $tables->num_rows === 0) {
+        return false;
+    }
+
+    $hasScore = false;
+    $hasCategory = false;
+    $hasSync = false;
+    $cols = @$conn->query('SHOW COLUMNS FROM `old_serials`');
+    if ($cols) {
+        while ($col = $cols->fetch_assoc()) {
+            $name = (string) ($col['Field'] ?? '');
+            if ($name === 'score') {
+                $hasScore = true;
+            } elseif ($name === 'category') {
+                $hasCategory = true;
+            } elseif ($name === 'sync_updated_ms') {
+                $hasSync = true;
+            }
+        }
+    }
+
+    $find = $conn->prepare('SELECT id FROM old_serials WHERE UPPER(serial) = ? LIMIT 1');
+    if (!$find) {
+        return false;
+    }
+    $find->bind_param('s', $serial);
+    $find->execute();
+    $existing = $find->get_result();
+    $row = $existing ? $existing->fetch_assoc() : null;
+    $find->close();
+
+    if ($row) {
+        if ($hasScore && $hasCategory && $hasSync && $cityVal !== '') {
+            $sql = 'UPDATE old_serials SET phone = ?, time = ?, city = ?, score = GREATEST(IFNULL(score, 0), ?), category = ?, sync_updated_ms = ? WHERE UPPER(serial) = ?';
+            $stmt = $conn->prepare($sql);
+            if (!$stmt) {
+                return false;
+            }
+            $stmt->bind_param('sssisis', $phone, $timeVal, $cityVal, $scoreVal, $category, $syncMs, $serial);
+        } elseif ($hasScore && $hasCategory && $hasSync) {
+            $sql = 'UPDATE old_serials SET phone = ?, time = ?, score = GREATEST(IFNULL(score, 0), ?), category = ?, sync_updated_ms = ? WHERE UPPER(serial) = ?';
+            $stmt = $conn->prepare($sql);
+            if (!$stmt) {
+                return false;
+            }
+            $stmt->bind_param('ssisis', $phone, $timeVal, $scoreVal, $category, $syncMs, $serial);
+        } elseif ($cityVal !== '') {
+            $sql = 'UPDATE old_serials SET phone = ?, time = ?, city = ? WHERE UPPER(serial) = ?';
+            $stmt = $conn->prepare($sql);
+            if (!$stmt) {
+                return false;
+            }
+            $stmt->bind_param('ssss', $phone, $timeVal, $cityVal, $serial);
+        } else {
+            $sql = 'UPDATE old_serials SET phone = ?, time = ? WHERE UPPER(serial) = ?';
+            $stmt = $conn->prepare($sql);
+            if (!$stmt) {
+                return false;
+            }
+            $stmt->bind_param('sss', $phone, $timeVal, $serial);
+        }
+        $ok = $stmt->execute();
+        $stmt->close();
+        return $ok;
+    }
+
+    if ($hasScore && $hasCategory && $hasSync && $cityVal !== '') {
+        $sql = 'INSERT INTO old_serials (serial, phone, time, city, score, category, sync_updated_ms) VALUES (?, ?, ?, ?, ?, ?, ?)';
+        $stmt = $conn->prepare($sql);
+        if (!$stmt) {
+            return false;
+        }
+        $stmt->bind_param('ssssisi', $serial, $phone, $timeVal, $cityVal, $scoreVal, $category, $syncMs);
+    } elseif ($hasScore && $hasCategory && $hasSync) {
+        $sql = 'INSERT INTO old_serials (serial, phone, time, score, category, sync_updated_ms) VALUES (?, ?, ?, ?, ?, ?)';
+        $stmt = $conn->prepare($sql);
+        if (!$stmt) {
+            return false;
+        }
+        $stmt->bind_param('sssisi', $serial, $phone, $timeVal, $scoreVal, $category, $syncMs);
+    } elseif ($cityVal !== '') {
+        $sql = 'INSERT INTO old_serials (serial, phone, time, city) VALUES (?, ?, ?, ?)';
+        $stmt = $conn->prepare($sql);
+        if (!$stmt) {
+            return false;
+        }
+        $stmt->bind_param('ssss', $serial, $phone, $timeVal, $cityVal);
+    } else {
+        $sql = 'INSERT INTO old_serials (serial, phone, time) VALUES (?, ?, ?)';
+        $stmt = $conn->prepare($sql);
+        if (!$stmt) {
+            return false;
+        }
+        $stmt->bind_param('sss', $serial, $phone, $timeVal);
+    }
+    $ok = $stmt->execute();
+    $stmt->close();
+    return $ok;
+}

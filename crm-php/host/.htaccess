@@ -5,8 +5,8 @@ RewriteBase /crm/
 RewriteCond %{HTTP:Authorization} .
 RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
 
-# Legacy sync PHP files only (push/pull/manifest). Buffer must hit api/index.php.
-RewriteRule ^api/sync/(push|pull|manifest)(/|$) - [L]
+# Existing sync PHP files
+RewriteRule ^api/sync/ - [L]
 
 # Front-controller for /api/*
 RewriteRule ^api/index\.php$ - [L]

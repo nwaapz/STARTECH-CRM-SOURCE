@@ -1,12 +1,26 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import NavBar from '@/components/NavBar.vue'
+import AnnouncementCard from '@/components/AnnouncementCard.vue'
 import ClubAutoMessageCard from '@/components/ClubAutoMessageCard.vue'
+import JalaliDateSelects from '@/components/JalaliDateSelects.vue'
 import UiSwitch from '@/components/UiSwitch.vue'
-import { createClubAutoMessage, fetchClubAutoMessages, fetchSerialGroups, fetchSerials } from '@/api/client'
+import {
+  createAnnouncement,
+  createClubAutoMessage,
+  fetchAnnouncements,
+  fetchClubAutoMessages,
+  fetchClubWelcomeSettings,
+  fetchSerialGroups,
+  fetchSerials,
+  updateClubWelcomeSettings,
+} from '@/api/client'
+import type { ClubAnnouncement, ClubWelcomeSettings } from '@/api/types'
 import type { ClubAutoMessageRule, SerialGroup, SerialRow } from '@/api/types'
 import { formatPhoneForDisplay } from '@/utils/formatPhone'
 import { todayJalaliDate } from '@/utils/jalali'
+
+type ClubTab = 'customers' | 'announcements' | 'welcome' | 'auto'
 
 interface CustomerRow {
   phone: string
@@ -25,6 +39,8 @@ function warrantyLabel(months?: number | null, km?: number | null): string {
   if (km != null && km > 0) parts.push(`${km} کیلومتر`)
   return parts.length ? parts.join(' یا ') : 'بدون گارانتی'
 }
+
+const clubTab = ref<ClubTab>('customers')
 
 const searchQuery = ref('')
 const page = ref(1)
@@ -62,6 +78,25 @@ const sendRubika = ref(false)
 const sendTelegram = ref(false)
 const sendBale = ref(false)
 const enabled = ref(true)
+
+const announcements = ref<ClubAnnouncement[]>([])
+const announcementsLoading = ref(false)
+const announcementsError = ref('')
+const annCreateBusy = ref(false)
+const annCreateError = ref('')
+const annCreateSuccess = ref('')
+const annTitle = ref('')
+const annMessage = ref('')
+const annCeiling = ref(todayJalaliDate())
+const annDailyCap = ref(300)
+const annDelaySeconds = ref(2)
+const annEnabled = ref(true)
+
+const welcomeSettings = ref<ClubWelcomeSettings>({ enabled: false, message: '' })
+const welcomeLoading = ref(false)
+const welcomeSaving = ref(false)
+const welcomeError = ref('')
+const welcomeSuccess = ref('')
 
 const customers = computed<CustomerRow[]>(() => {
   const map = new Map<string, CustomerRow>()
@@ -106,6 +141,102 @@ async function load() {
   } finally {
     loading.value = false
   }
+}
+
+async function loadWelcomeSettings() {
+  welcomeLoading.value = true
+  welcomeError.value = ''
+  try {
+    welcomeSettings.value = await fetchClubWelcomeSettings()
+  } catch (e) {
+    welcomeError.value = e instanceof Error ? e.message : 'خطا در بارگذاری پیام خوش‌آمد'
+  } finally {
+    welcomeLoading.value = false
+  }
+}
+
+async function saveWelcomeSettings() {
+  welcomeSaving.value = true
+  welcomeError.value = ''
+  welcomeSuccess.value = ''
+  try {
+    welcomeSettings.value = await updateClubWelcomeSettings({
+      enabled: welcomeSettings.value.enabled,
+      message: welcomeSettings.value.message.trim(),
+    })
+    welcomeSuccess.value = 'تنظیمات پیام خوش‌آمد ذخیره شد.'
+  } catch (e) {
+    welcomeError.value = e instanceof Error ? e.message : 'خطا در ذخیره'
+  } finally {
+    welcomeSaving.value = false
+  }
+}
+
+async function loadAnnouncements(silent = false) {
+  if (!silent) {
+    announcementsLoading.value = true
+  }
+  announcementsError.value = ''
+  try {
+    const response = await fetchAnnouncements()
+    announcements.value = response.items
+  } catch (e) {
+    if (!silent) {
+      announcementsError.value = e instanceof Error ? e.message : 'خطا در بارگذاری اطلاعیه‌ها'
+    }
+  } finally {
+    if (!silent) {
+      announcementsLoading.value = false
+    }
+  }
+}
+
+function insertAnnPlaceholder(token: string) {
+  const current = annMessage.value
+  annMessage.value =
+    current.length > 0 && !current.endsWith(' ')
+      ? `${current} ${token}`
+      : `${current}${token}`
+}
+
+async function createAnnouncementRule() {
+  annCreateBusy.value = true
+  annCreateError.value = ''
+  annCreateSuccess.value = ''
+  if (!annMessage.value.trim() || !annCeiling.value) {
+    annCreateError.value = 'متن و تاریخ سقف الزامی است'
+    annCreateBusy.value = false
+    return
+  }
+  try {
+    const created = await createAnnouncement({
+      title: annTitle.value.trim(),
+      message: annMessage.value.trim(),
+      ceilingDateJalali: annCeiling.value,
+      dailyCap: Math.max(1, Math.min(10000, Number(annDailyCap.value) || 300)),
+      delaySeconds: Math.max(0, Math.min(120, Number(annDelaySeconds.value) || 0)),
+      enabled: annEnabled.value,
+    })
+    announcements.value = [created, ...announcements.value]
+    annCreateSuccess.value = 'اطلاعیه ایجاد شد'
+    annMessage.value = ''
+    annTitle.value = ''
+    scheduleRulesPoll()
+  } catch (e) {
+    annCreateError.value = e instanceof Error ? e.message : 'خطا در ایجاد'
+  } finally {
+    annCreateBusy.value = false
+  }
+}
+
+function onAnnouncementUpdated(item: ClubAnnouncement) {
+  announcements.value = announcements.value.map((row) => (row.id === item.id ? item : row))
+  scheduleRulesPoll()
+}
+
+function onAnnouncementRemoved(id: number) {
+  announcements.value = announcements.value.filter((row) => row.id !== id)
+  scheduleRulesPoll()
 }
 
 async function loadRules(silent = false) {
@@ -255,7 +386,10 @@ function isRuleDueOrRunning(rule: ClubAutoMessageRule): boolean {
 }
 
 function needsFastRulesPoll(): boolean {
-  return rules.value.some(isRuleDueOrRunning)
+  return (
+    rules.value.some(isRuleDueOrRunning) ||
+    announcements.value.some((item) => item.enabled && item.status === 'running')
+  )
 }
 
 /** Keep last-run / progress fresh; poll faster while due or sending. */
@@ -265,9 +399,8 @@ function scheduleRulesPoll() {
   if (rulesPollTimer) clearInterval(rulesPollTimer)
   const intervalMs = needsFastRulesPoll() ? 1_000 : 15_000
   rulesPollTimer = setInterval(() => {
-    void loadRules(true).then(() => {
+    void Promise.all([loadRules(true), loadAnnouncements(true)]).then(() => {
       const nextMs = needsFastRulesPoll() ? 1_000 : 15_000
-      // Reschedule if interval should change
       if (intervalMs !== nextMs) scheduleRulesPoll()
     })
   }, intervalMs)
@@ -275,6 +408,8 @@ function scheduleRulesPoll() {
 
 onMounted(() => {
   void load()
+  void loadWelcomeSettings()
+  void loadAnnouncements()
   void loadRules().then(() => scheduleRulesPoll())
   void loadSerialGroups()
 })
@@ -290,6 +425,37 @@ onUnmounted(() => {
     <div class="page">
       <div class="card">
         <h1>باشگاه مشتریان</h1>
+        <div class="generation-tabs">
+          <button
+            type="button"
+            :class="['tab', { active: clubTab === 'customers' }]"
+            @click="clubTab = 'customers'"
+          >
+            مشتریان
+          </button>
+          <button
+            type="button"
+            :class="['tab', { active: clubTab === 'announcements' }]"
+            @click="clubTab = 'announcements'"
+          >
+            اطلاعیه‌ها
+          </button>
+          <button
+            type="button"
+            :class="['tab', { active: clubTab === 'welcome' }]"
+            @click="clubTab = 'welcome'"
+          >
+            خوش‌آمد
+          </button>
+          <button
+            type="button"
+            :class="['tab', { active: clubTab === 'auto' }]"
+            @click="clubTab = 'auto'"
+          >
+            پیام‌های خودکار
+          </button>
+        </div>
+        <template v-if="clubTab === 'customers'">
         <p class="hint">
           فهرست مشتریان بر اساس شماره تلفن، از سریال‌های ثبت‌شده گردآوری می‌شود. ادغام بر اساس شماره
           در صفحه فعلی انجام می‌شود.
@@ -355,9 +521,115 @@ onUnmounted(() => {
             بعدی
           </button>
         </div>
-      </div>
+        </template>
 
-      <div class="card">
+        <template v-if="clubTab === 'announcements'">
+          <h2>اطلاعیه‌ها</h2>
+          <p class="hint">
+            پیامک به شماره‌های ثبت‌شده، از تاریخ سقف جلالی به عقب. هر شماره در هر اطلاعیه فقط یک‌بار
+            پیامک می‌گیرد. سقف روزانه (مثلاً ۳۰۰) روی سرور با کرون باشگاه مشتریان ارسال می‌شود.
+          </p>
+          <div class="create-form">
+            <label>
+              عنوان (اختیاری)
+              <input v-model="annTitle" type="text" placeholder="مثال: اطلاعیه طرح تابستان" />
+            </label>
+            <label>
+              متن پیام
+              <textarea
+                v-model="annMessage"
+                rows="3"
+                placeholder="متن پیامک اطلاعیه"
+              />
+            </label>
+            <p class="hint placeholder-hint">
+              پارامترها از آخرین ثبت همان شماره:
+              <button type="button" class="link-btn" @click="insertAnnPlaceholder(SERIAL_PLACEHOLDER)">
+                {{ SERIAL_PLACEHOLDER }}
+              </button>
+              <button type="button" class="link-btn" @click="insertAnnPlaceholder(DATE_PLACEHOLDER)">
+                {{ DATE_PLACEHOLDER }}
+              </button>
+            </p>
+            <div class="form-grid">
+              <label class="full-width">
+                تاریخ سقف (جلالی)
+                <JalaliDateSelects v-model="annCeiling" />
+              </label>
+              <label>
+                سقف ارسال روزانه
+                <input v-model.number="annDailyCap" type="number" min="1" max="10000" />
+              </label>
+              <label>
+                تأخیر بین پیام‌ها (ثانیه)
+                <input v-model.number="annDelaySeconds" type="number" min="0" max="120" />
+              </label>
+            </div>
+            <div class="source-filter-toggles">
+              <UiSwitch v-model="annEnabled" label="فعال پس از ایجاد" />
+            </div>
+            <div class="actions">
+              <button
+                class="primary"
+                :disabled="annCreateBusy || !annMessage.trim() || !annCeiling"
+                @click="createAnnouncementRule"
+              >
+                ایجاد اطلاعیه
+              </button>
+            </div>
+            <p v-if="annCreateError" class="error">{{ annCreateError }}</p>
+            <p v-if="annCreateSuccess" class="hint success">{{ annCreateSuccess }}</p>
+          </div>
+          <p v-if="announcementsLoading" class="hint">در حال بارگذاری اطلاعیه‌ها…</p>
+          <p v-else-if="announcementsError" class="error">{{ announcementsError }}</p>
+          <p v-else-if="announcements.length === 0" class="hint">هنوز اطلاعیه‌ای تعریف نشده است.</p>
+          <AnnouncementCard
+            v-for="item in announcements"
+            :key="item.id"
+            :announcement="item"
+            @updated="onAnnouncementUpdated"
+            @removed="onAnnouncementRemoved"
+          />
+        </template>
+
+        <template v-if="clubTab === 'welcome'">
+        <h2>پیام خوش‌آمد پس از ثبت</h2>
+        <p class="hint">
+          پس از ثبت موفق سریال (پیامک یا ربات)، علاوه بر پیام تأیید گارانتی، یک پیامک دوم با متن
+          زیر برای مشتری ارسال می‌شود. روی سرور از پنل پیامک؛ روی گیت‌وی از سیم‌کارت یا ملی‌پیامک
+          (مطابق تنظیمات ارسال).
+        </p>
+        <p v-if="welcomeLoading" class="hint">در حال بارگذاری…</p>
+        <template v-else>
+          <div class="source-filter-toggles">
+            <UiSwitch v-model="welcomeSettings.enabled" label="ارسال پیام خوش‌آمد فعال" />
+          </div>
+          <label>
+            متن پیام
+            <textarea
+              v-model="welcomeSettings.message"
+              rows="4"
+              placeholder="مثال: به خانواده ما خوش آمدید!"
+              :disabled="!welcomeSettings.enabled"
+            />
+          </label>
+          <p class="hint placeholder-hint">
+            پارامترها:
+            <code>{{ SERIAL_PLACEHOLDER }}</code>
+            <code>{{ KM_PLACEHOLDER }}</code>
+            <code>{{ DATE_PLACEHOLDER }}</code>
+          </p>
+          <div class="actions">
+            <button class="primary" :disabled="welcomeSaving" @click="saveWelcomeSettings">
+              ذخیره پیام خوش‌آمد
+            </button>
+          </div>
+          <p v-if="welcomeError" class="error">{{ welcomeError }}</p>
+          <p v-if="welcomeSuccess" class="hint success">{{ welcomeSuccess }}</p>
+        </template>
+        </template>
+
+        <template v-if="clubTab === 'auto'">
         <h2>پیام‌های خودکار</h2>
         <p class="hint">
           قوانین را اینجا بسازید. اپلیکیشن گیت‌وی هر روز در ساعت تنظیم‌شده (بدون نیاز به باز بودن
@@ -486,6 +758,7 @@ onUnmounted(() => {
           @updated="onRuleUpdated"
           @removed="onRuleRemoved"
         />
+        </template>
       </div>
     </div>
   </div>

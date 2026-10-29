@@ -99,6 +99,15 @@ class RubikaProcessor private constructor(
                     now = now,
                 )
             }
+            if (response.registrationSucceeded) {
+                runBlocking {
+                    RegistrationWelcomeSmsService.sendIfEnabled(
+                        appContext,
+                        knownPhone,
+                        response.registeredSerial,
+                    )
+                }
+            }
             if (response.registrationSucceeded && settingsStore.isRubikaInviteEnabled()) {
                 sendInviteLink(token, chatId, knownPhone, now)
             }

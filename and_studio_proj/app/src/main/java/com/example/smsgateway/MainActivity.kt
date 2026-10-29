@@ -9,10 +9,10 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.Message
-import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -42,12 +42,11 @@ import com.example.smsgateway.TelegramPoller
 import com.example.smsgateway.cloud.CloudSyncService
 import com.example.smsgateway.license.LicenseGate
 import com.example.smsgateway.license.LicenseStore
-import com.example.smsgateway.ui.BaleScreen
+import com.example.smsgateway.ui.BotsScreen
 import com.example.smsgateway.ui.GatewayScreen
 import com.example.smsgateway.ui.LicenseLockOverlay
+import com.example.smsgateway.ui.ReportsScreen
 import com.example.smsgateway.ui.SerialGenerationScreen
-import com.example.smsgateway.ui.RubikaScreen
-import com.example.smsgateway.ui.TelegramScreen
 import com.example.smsgateway.ui.SettingsScreen
 import com.example.smsgateway.ui.SmsMessagesScreen
 import com.example.smsgateway.ui.theme.SmsGatewayTheme
@@ -79,9 +78,8 @@ private enum class AppTab(val titleRes: Int) {
     Gateway(R.string.tab_gateway),
     SerialGeneration(R.string.tab_serial_generation),
     Messages(R.string.tab_messages),
-    Rubika(R.string.tab_rubika),
-    Telegram(R.string.tab_telegram),
-    Bale(R.string.tab_bale),
+    Bots(R.string.tab_bots),
+    Reports(R.string.tab_reports),
     Settings(R.string.tab_settings),
 }
 
@@ -137,9 +135,8 @@ fun GatewayApp(openSyncConflicts: Boolean = false) {
                                         AppTab.Gateway -> Icons.Filled.Message
                                         AppTab.SerialGeneration -> Icons.Filled.Build
                                         AppTab.Messages -> Icons.Filled.Chat
-                                        AppTab.Rubika -> Icons.Filled.SmartToy
-                                        AppTab.Telegram -> Icons.Filled.Send
-                                        AppTab.Bale -> Icons.Filled.Chat
+                                        AppTab.Bots -> Icons.Filled.SmartToy
+                                        AppTab.Reports -> Icons.AutoMirrored.Filled.List
                                         AppTab.Settings -> Icons.Filled.Settings
                                     },
                                     contentDescription = stringResource(tab.titleRes),
@@ -169,16 +166,11 @@ fun GatewayApp(openSyncConflicts: Boolean = false) {
                     settingsStore = settingsStore,
                     modifier = Modifier.padding(innerPadding),
                 )
-                AppTab.Rubika -> RubikaScreen(
+                AppTab.Bots -> BotsScreen(
                     settingsStore = settingsStore,
                     modifier = Modifier.padding(innerPadding),
                 )
-                AppTab.Telegram -> TelegramScreen(
-                    settingsStore = settingsStore,
-                    modifier = Modifier.padding(innerPadding),
-                )
-                AppTab.Bale -> BaleScreen(
-                    settingsStore = settingsStore,
+                AppTab.Reports -> ReportsScreen(
                     modifier = Modifier.padding(innerPadding),
                 )
                 AppTab.Settings -> SettingsScreen(

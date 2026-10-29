@@ -5,6 +5,7 @@ import SerialTable from '@/components/SerialTable.vue'
 import SerialErrorDetailModal from '@/components/SerialErrorDetailModal.vue'
 import JalaliDateSelects from '@/components/JalaliDateSelects.vue'
 import { useSync } from '@/composables/useSync'
+import { isRemoteSurface } from '@/config/surface'
 import { fetchSerials, fetchSerialErrorClients, fetchRegistrationsByDay } from '@/api/client'
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import type { SerialErrorClientSummary, SerialRow } from '@/api/types'
@@ -13,11 +14,12 @@ import { formatPhoneForDisplay } from '@/utils/formatPhone'
 import { serialErrorReasonLabelFa } from '@/utils/formatSerialError'
 import { formatSyncChangeFa } from '@/utils/formatSyncChange'
 import { currentJalaliMonthRange } from '@/utils/jalali'
+import { perfPageNote } from '@/utils/perfDebug'
 import { Chart, BarController, BarElement, CategoryScale, LinearScale, Tooltip } from 'chart.js'
 
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Tooltip)
 
-const { stats, sims, changes, connected, toasts } = useSync({ intervalMs: 1000 })
+const { stats, sims, changes, connected, toasts } = useSync({ intervalMs: isRemoteSurface() ? 5000 : 1000 })
 
 const sortedChanges = computed(() => [...changes.value].sort((a, b) => b.at - a.at))
 
@@ -52,6 +54,8 @@ const errorModalOpen = ref(false)
 let errorsPollTimer: ReturnType<typeof setInterval> | undefined
 
 async function loadErrors() {
+  const t0 = performance.now()
+  perfPageNote('loadErrors start')
   try {
     const response = await fetchSerialErrorClients({
       page: errorsPage.value,
@@ -59,8 +63,9 @@ async function loadErrors() {
     })
     errorClients.value = response.items
     errorsTotal.value = response.total
+    perfPageNote(`loadErrors done ${Math.round(performance.now() - t0)}ms (${response.items.length} rows)`)
   } catch {
-    /* ignore on dashboard */
+    perfPageNote(`loadErrors failed ${Math.round(performance.now() - t0)}ms`)
   }
 }
 
@@ -122,6 +127,8 @@ function resizeChart() {
 }
 
 async function loadChart() {
+  const t0 = performance.now()
+  perfPageNote('loadChart start')
   chartLoading.value = true
   chartError.value = ''
   try {
@@ -197,8 +204,12 @@ async function loadChart() {
     })
   } catch (e) {
     chartError.value = e instanceof Error ? e.message : 'خطا در بارگذاری نمودار'
+    perfPageNote(`loadChart failed ${Math.round(performance.now() - t0)}ms`)
   } finally {
     chartLoading.value = false
+    if (!chartError.value) {
+      perfPageNote(`loadChart done ${Math.round(performance.now() - t0)}ms`)
+    }
   }
 }
 
@@ -214,6 +225,8 @@ function resetChartToThisMonth() {
 }
 
 async function loadRecent() {
+  const t0 = performance.now()
+  perfPageNote('loadRecent start')
   try {
     const response = await fetchSerials({
       registered: true,
@@ -222,8 +235,9 @@ async function loadRecent() {
     })
     recentRows.value = response.items
     registersTotal.value = response.total
+    perfPageNote(`loadRecent done ${Math.round(performance.now() - t0)}ms (${response.items.length}/${response.total})`)
   } catch {
-    /* ignore on dashboard */
+    perfPageNote(`loadRecent failed ${Math.round(performance.now() - t0)}ms`)
   }
 }
 
@@ -242,12 +256,13 @@ function nextRegistersPage() {
 }
 
 onMounted(() => {
+  perfPageNote('Dashboard mounted')
   void loadRecent()
   void loadErrors()
   void loadChart()
   errorsPollTimer = setInterval(() => {
     void loadErrors()
-  }, 5000)
+  }, isRemoteSurface() ? 30000 : 5000)
   if (typeof ResizeObserver !== 'undefined') {
     chartResizeObserver = new ResizeObserver(() => {
       resizeChart()

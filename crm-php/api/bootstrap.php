@@ -56,17 +56,181 @@ if (!is_file($dbConfig)) {
 require_once $dbConfig;
 
 header('Access-Control-Allow-Origin: *');
-header('Access-Control-Allow-Headers: Authorization, Content-Type, X-Sync-Token');
+header('Access-Control-Allow-Headers: Authorization, Content-Type, X-Sync-Token, X-Crm-Debug');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS');
 if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'OPTIONS') {
     http_response_code(204);
     exit;
 }
 
+/** @var array{start:float,steps:list<array{label:string,ms:float,detail?:string}>}|null */
+$GLOBALS['crm_debug'] = null;
+
+function crm_debug_enabled(): bool
+{
+    if (isset($_GET['debug']) && (string) $_GET['debug'] === '1') {
+        return true;
+    }
+    $hdr = $_SERVER['HTTP_X_CRM_DEBUG'] ?? '';
+    return $hdr === '1' || strtolower((string) $hdr) === 'true';
+}
+
+function crm_debug_init(string $path, string $method): void
+{
+    if (!crm_debug_enabled()) {
+        return;
+    }
+    $GLOBALS['crm_debug'] = ['start' => microtime(true), 'path' => $path, 'method' => $method, 'steps' => []];
+    crm_debug_mark('request_start');
+}
+
+function crm_debug_mark(string $label, ?string $detail = null): void
+{
+    if ($GLOBALS['crm_debug'] === null) {
+        return;
+    }
+    $now = microtime(true);
+    $prev = $GLOBALS['crm_debug']['start'];
+    if ($GLOBALS['crm_debug']['steps'] !== []) {
+        $last = $GLOBALS['crm_debug']['steps'][count($GLOBALS['crm_debug']['steps']) - 1];
+        $prev = $last['at'];
+    }
+    $GLOBALS['crm_debug']['steps'][] = [
+        'label' => $label,
+        'ms' => round(($now - $prev) * 1000, 2),
+        'at' => $now,
+        'detail' => $detail,
+    ];
+}
+
+/** @return array<string,mixed>|null */
+function crm_debug_payload(): ?array
+{
+    if ($GLOBALS['crm_debug'] === null) {
+        return null;
+    }
+    $start = $GLOBALS['crm_debug']['start'];
+    $totalMs = round((microtime(true) - $start) * 1000, 2);
+    $cumulative = 0.0;
+    $steps = [];
+    foreach ($GLOBALS['crm_debug']['steps'] as $step) {
+        $cumulative += (float) $step['ms'];
+        $row = [
+            'label' => $step['label'],
+            'ms' => $step['ms'],
+            'cumulativeMs' => round($cumulative, 2),
+        ];
+        if (!empty($step['detail'])) {
+            $row['detail'] = $step['detail'];
+        }
+        $steps[] = $row;
+    }
+    return [
+        'path' => $GLOBALS['crm_debug']['path'] ?? '',
+        'method' => $GLOBALS['crm_debug']['method'] ?? '',
+        'totalMs' => $totalMs,
+        'steps' => $steps,
+        'php' => PHP_VERSION,
+        'memoryMb' => round(memory_get_peak_usage(true) / 1048576, 1),
+    ];
+}
+
+/** One-line EXPLAIN summary (index used, rows examined, extra) for the debug panel. */
+function crm_debug_explain(mysqli $conn, string $sql, string $types = '', array $params = []): string
+{
+    $stmt = $conn->prepare('EXPLAIN ' . $sql);
+    if (!$stmt) {
+        return 'explain failed: ' . $conn->error;
+    }
+    if ($types !== '') {
+        $stmt->bind_param($types, ...$params);
+    }
+    if (!$stmt->execute()) {
+        $err = $stmt->error;
+        $stmt->close();
+        return 'explain failed: ' . $err;
+    }
+    $parts = [];
+    foreach (stmt_fetch_all_assoc($stmt) as $row) {
+        $parts[] = sprintf(
+            'type=%s key=%s rows=%s extra=%s',
+            $row['type'] ?? '?',
+            ($row['key'] ?? '') !== '' && $row['key'] !== null ? $row['key'] : 'NONE',
+            $row['rows'] ?? '?',
+            $row['Extra'] ?? ''
+        );
+    }
+    $stmt->close();
+    return implode(' ; ', $parts);
+}
+
+function crm_debug_attach(array $data): array
+{
+    $dbg = crm_debug_payload();
+    if ($dbg !== null) {
+        $data['_debug'] = $dbg;
+        header('X-Crm-Debug-Total-Ms: ' . $dbg['totalMs']);
+    }
+    return $data;
+}
+
+$GLOBALS['crm_deferred'] = [];
+
+/** Run $fn after the response has been sent (slow maintenance must not block the user). */
+function crm_defer(callable $fn): void
+{
+    $GLOBALS['crm_deferred'][] = $fn;
+}
+
+function crm_has_deferred(): bool
+{
+    return !empty($GLOBALS['crm_deferred']);
+}
+
+function crm_run_deferred(): void
+{
+    $tasks = $GLOBALS['crm_deferred'] ?? [];
+    if ($tasks === []) {
+        return;
+    }
+    $GLOBALS['crm_deferred'] = [];
+    @ignore_user_abort(true);
+    @set_time_limit(600);
+    if (function_exists('fastcgi_finish_request')) {
+        fastcgi_finish_request();
+    } elseif (function_exists('litespeed_finish_request')) {
+        litespeed_finish_request();
+    } else {
+        while (ob_get_level() > 0) {
+            @ob_end_flush();
+        }
+        flush();
+    }
+    foreach ($tasks as $fn) {
+        try {
+            $fn();
+        } catch (Throwable $e) {
+            error_log('[crm deferred] ' . $e->getMessage());
+        }
+    }
+}
+
+register_shutdown_function('crm_run_deferred');
+
 function json_out($data, int $code = 200): void {
     http_response_code($code);
     header('Content-Type: application/json; charset=utf-8');
-    echo json_encode($data, JSON_UNESCAPED_UNICODE);
+    if (is_array($data)) {
+        $data = crm_debug_attach($data);
+    }
+    $json = (string) json_encode($data, JSON_UNESCAPED_UNICODE);
+    if (crm_has_deferred() && !ini_get('zlib.output_compression')) {
+        // Lets the client finish reading even when the SAPI has no finish_request().
+        header('Content-Length: ' . strlen($json));
+        header('Connection: close');
+    }
+    echo $json;
+    crm_run_deferred();
     exit;
 }
 
@@ -122,8 +286,81 @@ function column_exists(mysqli $conn, string $table, string $col): bool {
     return $r && $r->num_rows > 0;
 }
 
+function crm_cache_dir(): string
+{
+    static $dir = null;
+    if ($dir !== null) {
+        return $dir;
+    }
+    $candidates = [dirname(__DIR__) . '/storage/cache', sys_get_temp_dir() . '/crm_cache_' . md5(__DIR__)];
+    foreach ($candidates as $c) {
+        if (is_dir($c) || @mkdir($c, 0775, true)) {
+            if (is_writable($c)) {
+                return $dir = $c;
+            }
+        }
+    }
+    return $dir = '';
+}
+
+/** @return mixed|null */
+function crm_cache_get(string $key, int $ttlSeconds)
+{
+    $dir = crm_cache_dir();
+    if ($dir === '') {
+        return null;
+    }
+    $file = $dir . '/' . preg_replace('/[^a-z0-9_.-]/i', '_', $key) . '.json';
+    $mtime = @filemtime($file);
+    if ($mtime === false || (time() - $mtime) >= $ttlSeconds) {
+        return null;
+    }
+    $raw = @file_get_contents($file);
+    if ($raw === false) {
+        return null;
+    }
+    $data = json_decode($raw, true);
+    return $data === null ? null : $data;
+}
+
+/** @param mixed $value */
+function crm_cache_set(string $key, $value): void
+{
+    $dir = crm_cache_dir();
+    if ($dir === '') {
+        return;
+    }
+    $file = $dir . '/' . preg_replace('/[^a-z0-9_.-]/i', '_', $key) . '.json';
+    @file_put_contents($file, json_encode($value), LOCK_EX);
+}
+
+function crm_cache_delete(string $key): void
+{
+    $dir = crm_cache_dir();
+    if ($dir === '') {
+        return;
+    }
+    @unlink($dir . '/' . preg_replace('/[^a-z0-9_.-]/i', '_', $key) . '.json');
+}
+
+function crm_schema_cache_key(): string
+{
+    return 'schema_ok_' . md5(__FILE__ . '|' . (string) @filemtime(__FILE__));
+}
+
 /** Ensure session + additive columns needed by the remote panel. */
 function ensure_remote_schema(mysqli $conn): void {
+    static $ready = false;
+    if ($ready) {
+        return;
+    }
+    // Schema DDL is idempotent but costs dozens of metadata queries; run at most hourly per deploy.
+    if (crm_cache_get(crm_schema_cache_key(), 3600) !== null) {
+        $ready = true;
+        return;
+    }
+    // Claim first so parallel requests right after a deploy don't all run the DDL checks.
+    crm_cache_set(crm_schema_cache_key(), ['at' => time()]);
     $ok = $conn->query(
         "CREATE TABLE IF NOT EXISTS crm_sessions (
             token VARCHAR(64) NOT NULL PRIMARY KEY,
@@ -217,6 +454,9 @@ function ensure_remote_schema(mysqli $conn): void {
             $stmt->close();
         }
     }
+
+    crm_cache_set(crm_schema_cache_key(), ['at' => time()]);
+    $ready = true;
 }
 
 function verify_password(string $plain, string $stored): bool {
@@ -338,7 +578,366 @@ function serials_table(mysqli $conn): string {
 
 function is_registered_sql(string $alias = ''): string {
     $p = $alias !== '' ? "$alias." : '';
-    return "({$p}phone IS NOT NULL AND TRIM({$p}phone) <> '' AND TRIM({$p}phone) <> '0')";
+    // Index-friendly: phones are stored normalized (no TRIM() in SQL).
+    return "({$p}phone IS NOT NULL AND {$p}phone <> '' AND {$p}phone <> '0')";
+}
+
+function serial_table_has_index(mysqli $conn, string $table, string $indexName): bool
+{
+    static $cache = [];
+    $k = $table . '|' . $indexName;
+    if (!isset($cache[$k])) {
+        $t = $conn->real_escape_string($table);
+        $i = $conn->real_escape_string($indexName);
+        $r = $conn->query("SHOW INDEX FROM `$t` WHERE Key_name = '$i'");
+        $cache[$k] = $r && $r->num_rows > 0;
+    }
+    return $cache[$k];
+}
+
+/** Changes whenever the index list changes, so new indexes get auto-built. */
+function crm_perf_index_done_key(): string
+{
+    return 'perf_index_auto_done_' . md5((string) json_encode(serial_perf_index_defs()));
+}
+
+/** @return array<string,array{column:string,def:string,exact?:bool,requires?:list<string>}> */
+function serial_perf_index_defs(): array
+{
+    return [
+        // Matches the registered-list ORDER BY so LIMIT 50 reads 50 index entries, not a filesort.
+        // exact: the date_jalali(10) prefix index can't serve ORDER BY, so don't count it as cover.
+        'idx_serials_reg_date' => [
+            'column' => 'date_jalali',
+            'def' => 'date_jalali, time',
+            'exact' => true,
+            'requires' => ['date_jalali', 'time'],
+        ],
+        'idx_serials_serial' => ['column' => 'serial', 'def' => 'serial'],
+        'idx_serials_phone' => ['column' => 'phone', 'def' => 'phone'],
+        'idx_serials_sync_updated_ms' => ['column' => 'sync_updated_ms', 'def' => 'sync_updated_ms'],
+        'idx_serials_date_jalali' => ['column' => 'date_jalali', 'def' => 'date_jalali(10)'],
+        'idx_serials_time' => ['column' => 'time', 'def' => 'time'],
+        'idx_serials_reg_source' => ['column' => 'reg_source', 'def' => 'reg_source'],
+        'idx_serials_lan_group' => ['column' => 'lan_group_id', 'def' => 'lan_group_id'],
+    ];
+}
+
+/**
+ * Which perf indexes exist / are missing. Never runs DDL.
+ *
+ * @return list<array{name:string,def:string,present:bool,applicable:bool}>
+ */
+function serial_perf_index_status(mysqli $conn, string $table): array
+{
+    $existing = [];
+    $leadingColumns = [];
+    $res = $conn->query("SHOW INDEX FROM `$table`");
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $existing[(string) $row['Key_name']] = true;
+            if ((int) $row['Seq_in_index'] === 1) {
+                $leadingColumns[strtolower((string) $row['Column_name'])] = (string) $row['Key_name'];
+            }
+        }
+    }
+    $columns = [];
+    $res = $conn->query("SHOW COLUMNS FROM `$table`");
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $columns[(string) $row['Field']] = true;
+        }
+    }
+    $out = [];
+    foreach (serial_perf_index_defs() as $name => $d) {
+        if (isset($existing[$name])) {
+            $coveredBy = $name;
+        } elseif (!empty($d['exact'])) {
+            $coveredBy = null;
+        } else {
+            $coveredBy = $leadingColumns[strtolower($d['column'])] ?? null;
+        }
+        $applicable = true;
+        foreach ($d['requires'] ?? [$d['column']] as $col) {
+            if (!isset($columns[$col])) {
+                $applicable = false;
+            }
+        }
+        $out[] = [
+            'name' => $name,
+            'def' => $d['def'],
+            'present' => $coveredBy !== null,
+            'coveredBy' => $coveredBy,
+            'applicable' => $applicable,
+        ];
+    }
+    return $out;
+}
+
+/**
+ * Build ONE missing perf index. Index DDL on a big table must never run inside normal
+ * page requests: concurrent ALTERs queue on the table metadata lock and stall every query.
+ * lock_wait_timeout keeps a blocked ALTER from freezing other requests for long.
+ *
+ * @return array{ok:bool,name?:string,ms?:float,error?:string,remaining:int}
+ */
+function serial_add_next_perf_index(mysqli $conn, string $table): array
+{
+    $missing = array_values(array_filter(
+        serial_perf_index_status($conn, $table),
+        static fn ($i) => $i['applicable'] && !$i['present']
+    ));
+    if ($missing === []) {
+        return ['ok' => true, 'remaining' => 0];
+    }
+    $next = $missing[0];
+    @set_time_limit(0);
+    @ignore_user_abort(true);
+    $conn->query('SET SESSION lock_wait_timeout = 5');
+    $t0 = microtime(true);
+    $sql = "ALTER TABLE `$table` ADD INDEX `{$next['name']}` ({$next['def']}), ALGORITHM=INPLACE, LOCK=NONE";
+    $ok = $conn->query($sql);
+    if ($ok === false) {
+        return [
+            'ok' => false,
+            'name' => $next['name'],
+            'error' => $conn->error,
+            'remaining' => count($missing),
+        ];
+    }
+    return [
+        'ok' => true,
+        'name' => $next['name'],
+        'ms' => round((microtime(true) - $t0) * 1000, 1),
+        'remaining' => count($missing) - 1,
+    ];
+}
+
+/**
+ * True when the report search is a serial token (has a letter), not a phone.
+ * Those lookups must ignore registration, date, group, source, and location filters.
+ */
+function serial_search_is_serial_lookup(string $search): bool
+{
+    $term = strtr(trim($search), [
+        '۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
+        '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
+        '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
+        '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
+    ]);
+    $term = preg_replace('/\s+/', '', $term) ?? $term;
+    $term = ltrim($term, '+');
+    if ($term === '' || !preg_match('/^[A-Za-z0-9_-]+$/', $term)) {
+        return false;
+    }
+    return (bool) preg_match('/[A-Za-z]/', $term);
+}
+
+/**
+ * WHERE fragment for the serials search box.
+ * $fast=true: index-friendly prefix matches (serial / phone); null when the term can't use them.
+ * $fast=false: legacy substring match on serial, phone and city (full table scan).
+ *
+ * @return array{0:string,1:string,2:list<string>}|null
+ */
+function serial_search_filter(string $search, bool $fast): ?array
+{
+    $term = strtr(trim($search), [
+        '۰' => '0', '۱' => '1', '۲' => '2', '۳' => '3', '۴' => '4',
+        '۵' => '5', '۶' => '6', '۷' => '7', '۸' => '8', '۹' => '9',
+        '٠' => '0', '١' => '1', '٢' => '2', '٣' => '3', '٤' => '4',
+        '٥' => '5', '٦' => '6', '٧' => '7', '٨' => '8', '٩' => '9',
+    ]);
+    $term = preg_replace('/\s+/', '', $term) ?? $term;
+    if ($term === '') {
+        return null;
+    }
+    if (!$fast) {
+        $like = '%' . $term . '%';
+        return ['(serial LIKE ? OR phone LIKE ? OR city LIKE ?)', 'sss', [$like, $like, $like]];
+    }
+    if (!preg_match('/^\+?[A-Za-z0-9_-]+$/', $term)) {
+        return null;
+    }
+    $escape = static fn (string $s): string => addcslashes($s, '%_\\');
+    $parts = ['serial LIKE ?'];
+    $params = [$escape(ltrim($term, '+')) . '%'];
+    $digits = ltrim($term, '+');
+    if (ctype_digit($digits) && strlen($digits) >= 3) {
+        if (strncmp($digits, '0098', 4) === 0) {
+            $digits = '0' . substr($digits, 4);
+        } elseif (strncmp($digits, '98', 2) === 0 && strlen($digits) >= 12) {
+            $digits = '0' . substr($digits, 2);
+        } elseif ($digits[0] === '9') {
+            $digits = '0' . $digits;
+        }
+        $parts[] = 'phone LIKE ?';
+        $params[] = $escape($digits) . '%';
+    }
+    return ['(' . implode(' OR ', $parts) . ')', str_repeat('s', count($params)), $params];
+}
+
+/**
+ * Build missing perf indexes one at a time, after the response is sent.
+ * Single-flight via a cache lock; a failure backs off for an hour.
+ */
+function crm_schedule_perf_index_build(mysqli $conn): void
+{
+    $doneKey = crm_perf_index_done_key();
+    $lockKey = 'perf_index_auto_building';
+    $failKey = 'perf_index_auto_failed';
+    $canFinishEarly = function_exists('fastcgi_finish_request') || function_exists('litespeed_finish_request');
+    if (
+        !$canFinishEarly
+        || crm_cache_dir() === ''
+        || crm_cache_get($doneKey, 86400) !== null
+        || crm_cache_get($lockKey, 900) !== null
+        || crm_cache_get($failKey, 3600) !== null
+    ) {
+        return;
+    }
+    crm_cache_set($lockKey, ['at' => time()]);
+    crm_defer(static function () use ($conn, $doneKey, $lockKey, $failKey): void {
+        $table = table_exists($conn, 'old_serials') ? 'old_serials' : (table_exists($conn, 'new_serials') ? 'new_serials' : '');
+        if ($table !== '') {
+            $result = serial_add_next_perf_index($conn, $table);
+            if (!$result['ok']) {
+                crm_cache_set($failKey, $result);
+            } elseif ($result['remaining'] === 0) {
+                crm_cache_set($doneKey, ['at' => time()]);
+            }
+        }
+        crm_cache_delete($lockKey);
+    });
+}
+
+/**
+ * ORDER BY for paginated serial lists.
+ * Registered rows: registration date (what the UI shows), index-friendly on date_jalali/time.
+ * Inventory / unused: last sync stamp so freshly generated stock surfaces first.
+ */
+function serial_list_order_sql(mysqli $conn, string $table, bool $byRegistrationDate = false): string
+{
+    if ($byRegistrationDate) {
+        $hasJalali = column_exists($conn, $table, 'date_jalali');
+        $hasTime = column_exists($conn, $table, 'time');
+        if ($hasJalali && $hasTime) {
+            return 'ORDER BY date_jalali DESC, time DESC, id DESC';
+        }
+        if ($hasJalali) {
+            return 'ORDER BY date_jalali DESC, id DESC';
+        }
+        if ($hasTime) {
+            return 'ORDER BY time DESC, id DESC';
+        }
+        return 'ORDER BY id DESC';
+    }
+    if (column_exists($conn, $table, 'sync_updated_ms')) {
+        return 'ORDER BY sync_updated_ms DESC, id DESC';
+    }
+    if (column_exists($conn, $table, 'time')) {
+        return 'ORDER BY time DESC, id DESC';
+    }
+    return 'ORDER BY id DESC';
+}
+
+/**
+ * Cached total/registered counts for dashboard sync (30s TTL).
+ *
+ * @return array{total:int,registered:int,unused:int}
+ */
+function serial_cached_stats(mysqli $conn, string $table, bool $refresh = false): array
+{
+    static $cache = [];
+    $now = time();
+    if (
+        !$refresh
+        && isset($cache[$table])
+        && ($now - (int) ($cache[$table]['at'] ?? 0)) < 30
+    ) {
+        return $cache[$table]['stats'];
+    }
+    $cacheKey = 'serial_stats_' . $table;
+    $toStats = static function (array $c): array {
+        return [
+            'total' => (int) $c['total'],
+            'registered' => (int) $c['registered'],
+            'unused' => max(0, (int) $c['total'] - (int) $c['registered']),
+        ];
+    };
+    $fileCached = crm_cache_get($cacheKey, $refresh ? 10 : 30);
+    if (is_array($fileCached) && isset($fileCached['total'], $fileCached['registered'])) {
+        $stats = $toStats($fileCached);
+        $cache[$table] = ['at' => $now, 'stats' => $stats];
+        return $stats;
+    }
+    $stale = crm_cache_get($cacheKey, 86400);
+    if (is_array($stale) && isset($stale['total'], $stale['registered'])) {
+        $lockKey = $cacheKey . '_refreshing';
+        if (crm_cache_get($lockKey, 300) === null) {
+            crm_cache_set($lockKey, ['at' => $now]);
+            crm_defer(static function () use ($conn, $table, $cacheKey, $lockKey): void {
+                serial_compute_stats($conn, $table, $cacheKey);
+                crm_cache_delete($lockKey);
+            });
+        }
+        $stats = $toStats($stale);
+        $cache[$table] = ['at' => $now, 'stats' => $stats];
+        return $stats;
+    }
+
+    $stats = serial_compute_stats($conn, $table, $cacheKey);
+    $cache[$table] = ['at' => $now, 'stats' => $stats];
+    return $stats;
+}
+
+/** @return array{total:int,registered:int,unused:int} */
+function serial_compute_stats(mysqli $conn, string $table, string $cacheKey): array
+{
+    $registeredSql = is_registered_sql();
+    $res = $conn->query(
+        "SELECT COUNT(*) AS total,
+                SUM(CASE WHEN $registeredSql THEN 1 ELSE 0 END) AS registered
+         FROM `$table`"
+    );
+    $total = 0;
+    $registered = 0;
+    if ($res && ($row = $res->fetch_assoc())) {
+        $total = (int) ($row['total'] ?? $row['c'] ?? 0);
+        $registered = (int) ($row['registered'] ?? 0);
+    }
+    $stats = [
+        'total' => $total,
+        'registered' => $registered,
+        'unused' => max(0, $total - $registered),
+    ];
+    if ($res) {
+        crm_cache_set($cacheKey, $stats);
+    }
+    return $stats;
+}
+
+/**
+ * Use cached registered count when the list query is unfiltered except registered=true.
+ */
+function serial_list_uses_cached_total(
+    ?string $registeredParam,
+    string $search,
+    string $from,
+    string $to,
+    array $sourceParams,
+    array $categoryParams,
+    array $groupIds,
+    string $provinceId
+): bool {
+    return $registeredParam === 'true'
+        && $search === ''
+        && $from === ''
+        && $to === ''
+        && $sourceParams === []
+        && $categoryParams === []
+        && $groupIds === []
+        && trim($provinceId) === '';
 }
 
 /** Millisecond event time for a serial row (sync_updated_ms preferred, else time). */
@@ -381,8 +980,8 @@ function sync_changes_from_serials(mysqli $conn, int $since): array {
     }
 
     $order = $hasSync
-        ? 'ORDER BY COALESCE(NULLIF(sync_updated_ms, 0), UNIX_TIMESTAMP(`time`) * 1000) DESC, id DESC'
-        : 'ORDER BY `time` DESC, id DESC';
+        ? 'ORDER BY sync_updated_ms DESC, id DESC'
+        : ($hasJalali ? 'ORDER BY `time` DESC, id DESC' : 'ORDER BY id DESC');
 
     $sql = "SELECT $select FROM `$table` WHERE " . is_registered_sql() . " $order LIMIT 120";
     $res = $conn->query($sql);
@@ -493,10 +1092,12 @@ function serial_known_city_for_phone(mysqli $conn, string $phone, ?string $exclu
 
 /**
  * Batch known cities for phones on a report page (avoids N+1).
+ *
  * @param list<string> $phones
+ * @param array<string,string> $excludeSerialByPhone phone => serial to skip when inheriting city
  * @return array<string,string> phone => city
  */
-function serial_known_cities_for_phones(mysqli $conn, array $phones): array {
+function serial_known_cities_for_phones(mysqli $conn, array $phones, array $excludeSerialByPhone = []): array {
     $phones = array_values(array_unique(array_filter(array_map('trim', $phones))));
     if ($phones === []) {
         return [];
@@ -507,9 +1108,9 @@ function serial_known_cities_for_phones(mysqli $conn, array $phones): array {
     }
     $placeholders = implode(',', array_fill(0, count($phones), '?'));
     $types = str_repeat('s', count($phones));
-    $sql = "SELECT phone, city FROM `$table`
+    $sql = "SELECT phone, city, serial FROM `$table`
             WHERE phone IN ($placeholders)
-              AND city IS NOT NULL AND TRIM(city) <> ''
+              AND city IS NOT NULL AND city <> ''
             ORDER BY id DESC";
     $stmt = $conn->prepare($sql);
     if (!$stmt) {
@@ -523,9 +1124,14 @@ function serial_known_cities_for_phones(mysqli $conn, array $phones): array {
         while ($r = $res->fetch_assoc()) {
             $p = trim((string) ($r['phone'] ?? ''));
             $c = trim((string) ($r['city'] ?? ''));
-            if ($p !== '' && $c !== '' && !isset($out[$p])) {
-                $out[$p] = $c;
+            if ($p === '' || $c === '' || isset($out[$p])) {
+                continue;
             }
+            $exclude = $excludeSerialByPhone[$p] ?? '';
+            if ($exclude !== '' && strcasecmp((string) ($r['serial'] ?? ''), $exclude) === 0) {
+                continue;
+            }
+            $out[$p] = $c;
         }
     }
     $stmt->close();
@@ -637,6 +1243,52 @@ function crm_resolve_sms_template(mysqli $conn, string $messageId, array $values
     return $template;
 }
 
+/** Format warranty label for SMS templates (mirrors SerialGroupWarranty.formatFa). */
+function crm_format_warranty_fa(?int $months, ?int $km): string {
+    $parts = [];
+    if ($months !== null && $months > 0) {
+        $parts[] = $months . ' ماه';
+    }
+    if ($km !== null && $km > 0) {
+        $parts[] = $km . ' کیلومتر';
+    }
+    return $parts !== [] ? implode(' یا ', $parts) : 'طبق شرایط محصول';
+}
+
+/**
+ * Build registration-confirmation SMS (mirrors RegistrationConfirmationSmsService on Android).
+ */
+function crm_build_registration_confirmation_message(mysqli $conn, array $row): string {
+    $serial = (string) ($row['serial'] ?? '');
+    $warrantyLabel = 'طبق شرایط محصول';
+    $groupId = isset($row['lan_group_id']) ? (int) $row['lan_group_id'] : 0;
+    if ($groupId > 0 && table_exists($conn, 'serial_groups')) {
+        $stmt = $conn->prepare('SELECT warranty_months, warranty_km, image_verification_required FROM serial_groups WHERE id=? LIMIT 1');
+        if ($stmt) {
+            $stmt->bind_param('i', $groupId);
+            $stmt->execute();
+            $group = $stmt->get_result()->fetch_assoc();
+            $stmt->close();
+            if ($group) {
+                $warrantyLabel = crm_format_warranty_fa(
+                    isset($group['warranty_months']) ? (int) $group['warranty_months'] : null,
+                    isset($group['warranty_km']) ? (int) $group['warranty_km'] : null,
+                );
+                $base = crm_resolve_sms_template($conn, 'reply_valid', ['@1' => $warrantyLabel]);
+                $withSerial = $base . "\nسریال: " . $serial;
+                if (!empty($group['image_verification_required'])) {
+                    return $withSerial . "\n\nبرای شرکت در قرعه‌کشی / دریافت امتیاز، لطفاً عکس محصول سریال "
+                        . $serial
+                        . ' را از منوی «ارسال عکس محصول» ارسال کنید.';
+                }
+                return $withSerial;
+            }
+        }
+    }
+    $base = crm_resolve_sms_template($conn, 'reply_valid', ['@1' => $warrantyLabel]);
+    return $base . "\nسریال: " . $serial;
+}
+
 /**
  * Build completion-reminder SMS body (mirrors CompletionReminderService on Android).
  *
@@ -702,6 +1354,56 @@ function crm_build_completion_reminder_message(mysqli $conn, array $row): ?strin
  * Send SMS via Melipayamak panel (same path as legacy CRM SMS.php / lottery helper).
  * @return true|string true on success, error message on failure
  */
+/**
+ * Optional welcome SMS after successful registration (club_welcome_settings).
+ * Best-effort: logs failures, does not throw.
+ */
+function crm_send_registration_welcome_sms(mysqli $conn, string $phone, array $row): void
+{
+    require_once __DIR__ . '/settings_store.php';
+    require_once __DIR__ . '/comms_store.php';
+    require_once __DIR__ . '/club_auto_runner.php';
+    $settings = crm_settings_get_or_default($conn, 'club_welcome_settings', crm_default_club_welcome());
+    if (empty($settings['enabled'])) {
+        return;
+    }
+    $template = trim((string) ($settings['message'] ?? ''));
+    if ($template === '') {
+        return;
+    }
+    $normalizedPhone = comms_normalize_phone($phone);
+    if ($normalizedPhone === '' || !preg_match('/^09\d{9}$/', $normalizedPhone)) {
+        return;
+    }
+    $km = '';
+    if (isset($row['km']) && $row['km'] !== null && $row['km'] !== '') {
+        $km = (string) (int) $row['km'];
+    }
+    $date = serial_date_jalali($row) ?? '';
+    if ($date === '' && !empty($row['date_jalali'])) {
+        $date = trim((string) $row['date_jalali']);
+    }
+    $reg = [
+        'serial' => (string) ($row['serial'] ?? ''),
+        'km' => $km,
+        'date' => $date,
+    ];
+    if ($reg['serial'] === '') {
+        return;
+    }
+    $message = crm_club_apply_placeholders($template, $reg);
+    if (trim($message) === '') {
+        return;
+    }
+    $sendResult = crm_send_panel_sms($normalizedPhone, $message);
+    if ($sendResult !== true) {
+        comms_insert($conn, $normalizedPhone, 'outgoing', $message, 'sms', 'failed');
+        error_log('[crm_send_registration_welcome_sms] ' . (is_string($sendResult) ? $sendResult : 'failed'));
+        return;
+    }
+    comms_insert($conn, $normalizedPhone, 'outgoing', $message, 'sms', 'sent');
+}
+
 function crm_send_panel_sms(string $phone, string $message) {
     $digits = preg_replace('/\D/', '', trim($phone));
     if ($digits !== '' && strpos($digits, '98') === 0 && strlen($digits) >= 12) {
@@ -844,6 +1546,26 @@ function format_jalali(int $y, int $m, int $d): string {
     return sprintf('%04d/%02d/%02d', $y, $m, $d);
 }
 
+/** The Jalali day after $date (YYYY/MM/DD), or null when $date is not a date. */
+function jalali_next_day(string $date): ?string
+{
+    $parsed = parse_jalali_date($date);
+    if ($parsed === null) {
+        return null;
+    }
+    [$y, $m, $d] = $parsed;
+    $d++;
+    if ($d > jalali_days_in_month($y, $m)) {
+        $d = 1;
+        $m++;
+        if ($m > 12) {
+            $m = 1;
+            $y++;
+        }
+    }
+    return format_jalali($y, $m, $d);
+}
+
 /**
  * Inclusive list of Jalali YYYY/MM/DD keys from $from through $to (capped ~3 years).
  * @return list<string>
@@ -911,7 +1633,8 @@ function normalize_jalali_date_param(string $raw): string {
 /**
  * Build WHERE fragments for a Jalali registration-date range.
  *
- * Uses date_jalali when present (YYYY/MM/DD); otherwise falls back to Gregorian `time`.
+ * Uses date_jalali when present (YYYY/MM/DD, or that date plus a time).
+ * The end bound is the next Jalali day, so a time suffix still falls on the selected day.
  * Rows with neither a usable date_jalali nor time are EXCLUDED when a range is set
  * (unlike the old bug that kept NULL dates in every range).
  *
@@ -945,26 +1668,22 @@ function serial_date_range_filters(mysqli $conn, string $table, string $from, st
         }
     }
 
-    // Prefer explicit Jalali column; otherwise use DATE(time) compared via Gregorian bounds.
-    $jalaliOk = "date_jalali IS NOT NULL AND TRIM(date_jalali) <> '' AND LEFT(date_jalali, 10) REGEXP '^[0-9]{4}/[0-9]{2}/[0-9]{2}'";
-    $jalaliMissing = $hasJalali
-        ? "(date_jalali IS NULL OR TRIM(date_jalali) = '' OR LEFT(date_jalali, 10) NOT REGEXP '^[0-9]{4}/[0-9]{2}/[0-9]{2}')"
-        : '1=1';
-    $timeOk = $hasTime
-        ? "(time IS NOT NULL AND CAST(time AS CHAR) <> '' AND LEFT(CAST(time AS CHAR), 4) <> '0000')"
-        : '0=1';
+    // Prefer date_jalali (index-friendly string compare); fall back to Gregorian time range.
+    $jalaliOk = 'date_jalali IS NOT NULL AND date_jalali <> \'\'';
+    $jalaliMissing = $hasJalali ? '(date_jalali IS NULL OR date_jalali = \'\')' : '1=1';
+    $timeOk = $hasTime ? "(time IS NOT NULL AND time <> '0000-00-00 00:00:00')" : '0=1';
 
     if ($from !== '') {
         $parts = [];
         if ($hasJalali) {
-            $parts[] = "($jalaliOk AND LEFT(date_jalali, 10) >= ?)";
+            $parts[] = "($jalaliOk AND date_jalali >= ?)";
             $types .= 's';
             $params[] = $from;
         }
         if ($hasTime && $gFrom !== null) {
-            $parts[] = "($jalaliMissing AND $timeOk AND DATE(time) >= ?)";
+            $parts[] = "($jalaliMissing AND $timeOk AND time >= ?)";
             $types .= 's';
-            $params[] = $gFrom;
+            $params[] = $gFrom . ' 00:00:00';
         }
         if ($parts === []) {
             // No usable date columns — force empty result when a from filter is requested.
@@ -977,12 +1696,21 @@ function serial_date_range_filters(mysqli $conn, string $table, string $from, st
     if ($to !== '') {
         $parts = [];
         if ($hasJalali) {
-            $parts[] = "($jalaliOk AND LEFT(date_jalali, 10) <= ?)";
-            $types .= 's';
-            $params[] = $to;
+            // Exclusive next day so "1404/07/18 13:33:00" still counts as 1404/07/18.
+            // A date-only "<=" drops any row whose date_jalali has a time suffix.
+            $toExclusive = jalali_next_day($to);
+            if ($toExclusive !== null) {
+                $parts[] = "($jalaliOk AND date_jalali < ?)";
+                $types .= 's';
+                $params[] = $toExclusive;
+            } else {
+                $parts[] = "($jalaliOk AND date_jalali <= ?)";
+                $types .= 's';
+                $params[] = $to;
+            }
         }
         if ($hasTime && $gTo !== null) {
-            $parts[] = "($jalaliMissing AND $timeOk AND DATE(time) <= ?)";
+            $parts[] = "($jalaliMissing AND $timeOk AND time < DATE_ADD(?, INTERVAL 1 DAY))";
             $types .= 's';
             $params[] = $gTo;
         }

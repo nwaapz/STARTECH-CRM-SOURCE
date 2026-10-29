@@ -83,6 +83,22 @@ interface SerialPhotoSubmissionDao {
 
     @Query(
         """
+        UPDATE serial_photo_submissions
+        SET serial = :newSerial,
+            phone = :newPhone
+        WHERE serial = :oldSerial
+          AND phone = :oldPhone
+        """,
+    )
+    suspend fun updateRegistrationLink(
+        oldSerial: String,
+        newSerial: String,
+        oldPhone: String,
+        newPhone: String,
+    ): Int
+
+    @Query(
+        """
         SELECT * FROM serial_photo_submissions
         WHERE phone = :phone
           AND status = 'approved'

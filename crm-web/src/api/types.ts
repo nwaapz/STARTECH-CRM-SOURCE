@@ -103,6 +103,8 @@ export interface ComplexBatchRequest {
 
 export interface ImportBatchRequest {
   serials: string[]
+  /** Append into an existing import group instead of creating a new card. */
+  groupId?: number
   city?: string
   km?: number
   description?: string
@@ -118,6 +120,8 @@ export interface BatchResponse {
   skipped: number
   total: number
   groupId?: number | null
+  /** Import only: every serial in this chunk already existed; nothing was written. */
+  allDuplicates?: boolean
 }
 
 export interface ImportCsvResponse extends BatchResponse {
@@ -215,6 +219,7 @@ export interface SerialRow {
 export interface UpdateSerialRowRequest {
   serial: string
   date: string
+  phone: string
   city?: string | null
   km?: number | null
 }
@@ -643,6 +648,65 @@ export interface ReferralSettings {
   basePoints: number
   decayPercent: number
   maxDepth: number
+}
+
+export interface ClubWelcomeSettings {
+  enabled: boolean
+  message: string
+}
+
+export type ClubAnnouncementStatus = 'idle' | 'running' | 'completed' | 'paused' | string
+
+export interface ClubAnnouncementUpsertRequest {
+  title?: string
+  message: string
+  ceilingDateJalali: string
+  dailyCap: number
+  delaySeconds?: number
+  enabled: boolean
+}
+
+export interface ClubAnnouncement {
+  id: number
+  title: string
+  message: string
+  ceilingDateJalali: string
+  cursorDateJalali: string
+  dailyCap: number
+  delaySeconds: number
+  enabled: boolean
+  status: ClubAnnouncementStatus
+  lastRunAt: number | null
+  lastRunDateJalali: string | null
+  lastSuccessCount: number
+  lastFailCount: number
+  sentCount: number
+  failCount: number
+  eligibleCount: number
+  remainingCount: number
+  etaDays: number
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ClubAnnouncementListResponse {
+  items: ClubAnnouncement[]
+}
+
+export interface ClubAnnouncementSendItem {
+  id: number
+  phone: string
+  serial: string
+  sentAt: number
+  sentDateJalali: string
+  status: string
+}
+
+export interface ClubAnnouncementSendListResponse {
+  items: ClubAnnouncementSendItem[]
+  total: number
+  page: number
+  limit: number
 }
 
 export interface ReferralCustomer {

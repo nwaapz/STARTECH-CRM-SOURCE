@@ -99,6 +99,15 @@ class TelegramProcessor private constructor(
                     now = now,
                 )
             }
+            if (response.registrationSucceeded) {
+                runBlocking {
+                    RegistrationWelcomeSmsService.sendIfEnabled(
+                        appContext,
+                        knownPhone,
+                        response.registeredSerial,
+                    )
+                }
+            }
             if (response.firstRegistration && settingsStore.isTelegramInviteEnabled()) {
                 sendInviteLink(token, chatId, knownPhone, now)
             }

@@ -76,14 +76,15 @@ interface SerialDao {
         """
         UPDATE gateway_db
         SET serial = :serial,
+            phone = :phone,
             date = :date,
             city = :city,
             km = :km,
             registrationFieldsComplete = CASE
-                WHEN phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
+                WHEN :phone IS NOT NULL AND TRIM(:phone) != '' AND TRIM(:phone) != '0'
                      AND (:city IS NOT NULL AND :city != '')
                      AND (:requiresKm = 0 OR :km IS NOT NULL) THEN 1
-                WHEN phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0' THEN 0
+                WHEN :phone IS NOT NULL AND TRIM(:phone) != '' AND TRIM(:phone) != '0' THEN 0
                 ELSE registrationFieldsComplete
             END
         WHERE id = :id
@@ -92,6 +93,7 @@ interface SerialDao {
     suspend fun updateRegistrationById(
         id: Long,
         serial: String,
+        phone: String,
         date: String?,
         city: String?,
         km: Int?,
@@ -912,6 +914,40 @@ interface SerialDao {
         """,
     )
     suspend fun countRegisteredByJalaliDay(fromDate: String, toDate: String): List<DayCountRow>
+
+    /**
+     * Registered rows whose report date is missing or the literal string "null"
+     * (shown as — / null in CRM reports).
+     */
+    @Query(
+        """
+        SELECT * FROM gateway_db
+        WHERE phone IS NOT NULL AND TRIM(phone) != '' AND TRIM(phone) != '0'
+          AND (
+            date IS NULL
+            OR TRIM(date) = ''
+            OR LOWER(TRIM(date)) = 'null'
+          )
+        ORDER BY id ASC
+        """,
+    )
+    suspend fun listRegisteredWithNullDate(): List<SerialEntity>
+
+    /** Fill date only when still null/blank/"null" (safe for concurrent repairs). */
+    @Query(
+        """
+        UPDATE gateway_db
+        SET date = :date,
+            syncUpdatedMs = :syncUpdatedMs
+        WHERE id = :id
+          AND (
+            date IS NULL
+            OR TRIM(date) = ''
+            OR LOWER(TRIM(date)) = 'null'
+          )
+        """,
+    )
+    suspend fun updateDateIfNull(id: Long, date: String, syncUpdatedMs: Long): Int
 }
 
 /** Phone + raw registration date for club auto-message eligibility (date compared in Kotlin). */

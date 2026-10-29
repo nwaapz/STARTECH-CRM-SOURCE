@@ -10,6 +10,7 @@ require_once __DIR__ . '/bootstrap.php';
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = $_SERVER['REQUEST_URI'] ?? '/';
 $path = parse_url($uri, PHP_URL_PATH) ?: '/';
+crm_debug_init($path, $method);
 
 // Strip /crm/api or /api prefix
 $path = preg_replace('#^.*?/api(?:/index\.php)?#', '', $path) ?? '';
@@ -52,6 +53,11 @@ if ($path === '/sync/buffer/backfill' && $method === 'POST') {
     require __DIR__ . '/sync/buffer/backfill.php';
     exit;
 }
+// Dedicated date lookup for null-date repair (not buffer sync).
+if ($path === '/sync/serials/dates' && $method === 'POST') {
+    require __DIR__ . '/sync/serials/dates.php';
+    exit;
+}
 // Legacy hybrid endpoints retired in favor of dual-buffer exchange.
 if (
     ($path === '/sync/push' && $method === 'POST')
@@ -68,8 +74,15 @@ if (
     exit;
 }
 
+crm_debug_mark('bootstrap_loaded');
 $conn = payamesh_mysqli();
+crm_debug_mark('db_connect');
+if (starts_with($path, '/debug/')) {
+    require __DIR__ . '/debug_db.php';
+    exit;
+}
 ensure_remote_schema($conn);
+crm_debug_mark('ensure_remote_schema');
 
 // --- Public (kept for older clients that expected health after schema) ---
 if ($path === '/ping' && $method === 'GET') {
@@ -128,6 +141,8 @@ if ($path === '/auth/login' && $method === 'POST') {
 
 // Everything below requires auth
 $user = require_auth($conn);
+crm_debug_mark('auth_ok', $user['username'] ?? '');
+crm_schedule_perf_index_build($conn);
 
 if ($path === '/auth/me' && $method === 'GET') {
     json_out(['id' => $user['id'], 'username' => $user['username'], 'role' => $user['role']]);
@@ -135,28 +150,24 @@ if ($path === '/auth/me' && $method === 'GET') {
 
 if ($path === '/sync' && $method === 'GET') {
     $table = serials_table($conn);
-    $totalRes = $conn->query("SELECT COUNT(*) AS c FROM `$table`");
-    $total = ($totalRes && ($tr = $totalRes->fetch_assoc())) ? (int) ($tr['c'] ?? 0) : 0;
-    $registeredRes = $conn->query(
-        "SELECT COUNT(*) AS c FROM `$table` WHERE " . is_registered_sql()
-    );
-    $registered = ($registeredRes && ($rr = $registeredRes->fetch_assoc())) ? (int) ($rr['c'] ?? 0) : 0;
-    $unused = max(0, $total - $registered);
     $since = (int) ($_GET['since'] ?? 0);
+    $stats = serial_cached_stats($conn, $table, $since === 0);
+    crm_debug_mark('sync_cached_stats', 'since=' . $since);
     $now = (int) (microtime(true) * 1000);
     require_once __DIR__ . '/activity_store.php';
-    $changes = crm_activity_merge_changes(
-        crm_activity_list_since($conn, $since, 80),
-        sync_changes_from_serials($conn, $since),
-        50
-    );
+    $activity = crm_activity_list_since($conn, $since, 80);
+    crm_debug_mark('sync_activity_list', count($activity) . ' rows');
+    $serialChanges = sync_changes_from_serials($conn, $since);
+    crm_debug_mark('sync_serial_changes', count($serialChanges) . ' rows');
+    $changes = crm_activity_merge_changes($activity, $serialChanges, 50);
+    crm_debug_mark('sync_merge_changes', count($changes) . ' merged');
     json_out([
         'serverTime' => $now,
         'cursor' => $now,
         'stats' => [
-            'total' => $total,
-            'unused' => $unused,
-            'registered' => $registered,
+            'total' => $stats['total'],
+            'unused' => $stats['unused'],
+            'registered' => $stats['registered'],
         ],
         'changes' => $changes,
         'sims' => [],
@@ -187,8 +198,8 @@ if ($path === '/stats/registrations-by-day' && $method === 'GET') {
         $sql = "SELECT LEFT(date_jalali, 10) AS day, COUNT(*) AS c
                 FROM `$table`
                 WHERE " . is_registered_sql() . "
-                  AND date_jalali IS NOT NULL AND TRIM(date_jalali) <> ''
-                  AND LEFT(date_jalali, 10) >= ? AND LEFT(date_jalali, 10) <= ?
+                  AND date_jalali IS NOT NULL AND date_jalali <> ''
+                  AND date_jalali >= ? AND date_jalali <= ?
                 GROUP BY LEFT(date_jalali, 10)";
         $stmt = $conn->prepare($sql);
         if ($stmt) {
@@ -203,6 +214,7 @@ if ($path === '/stats/registrations-by-day' && $method === 'GET') {
             }
             $stmt->close();
         }
+        crm_debug_mark('chart_jalali_group_by', count($counts) . ' days');
     }
 
     // 2) Legacy rows: only `time` (Gregorian) — convert day → Jalali for the chart
@@ -214,13 +226,13 @@ if ($path === '/stats/registrations-by-day' && $method === 'GET') {
         $gFromStr = format_gregorian($gFrom[0], $gFrom[1], $gFrom[2]);
         $gToStr = format_gregorian($gTo[0], $gTo[1], $gTo[2]);
         $jalaliFilter = $hasJalali
-            ? "AND (date_jalali IS NULL OR TRIM(date_jalali) = '')"
+            ? "AND (date_jalali IS NULL OR date_jalali = '')"
             : '';
         $sql = "SELECT DATE(`time`) AS gday, COUNT(*) AS c
                 FROM `$table`
                 WHERE " . is_registered_sql() . "
                   AND `time` IS NOT NULL
-                  AND DATE(`time`) >= ? AND DATE(`time`) <= ?
+                  AND `time` >= ? AND `time` < DATE_ADD(?, INTERVAL 1 DAY)
                   $jalaliFilter
                 GROUP BY DATE(`time`)";
         $stmt = $conn->prepare($sql);
@@ -243,6 +255,7 @@ if ($path === '/stats/registrations-by-day' && $method === 'GET') {
             }
             $stmt->close();
         }
+        crm_debug_mark('chart_time_group_by', count($counts) . ' days total');
     }
 
     $days = [];
@@ -261,6 +274,7 @@ if ($path === '/stats/registrations-by-day' && $method === 'GET') {
             $days[] = ['day' => $key, 'count' => $counts[$key]];
         }
     }
+    crm_debug_mark('chart_axis_build', count($days) . ' axis points');
     json_out(['from' => $from, 'to' => $to, 'days' => $days]);
 }
 
@@ -310,132 +324,365 @@ if ($path === '/serials' && $method === 'GET') {
     }
     $groupIds = array_values(array_unique($groupIds));
 
+    $sourceParams = [];
+    if (isset($_GET['source'])) {
+        $rawSource = $_GET['source'];
+        $rawList = is_array($rawSource) ? $rawSource : [$rawSource];
+        foreach ($rawList as $s) {
+            foreach (explode(',', (string) $s) as $p) {
+                $p = strtolower(trim($p));
+                if ($p !== '') {
+                    $sourceParams[] = $p;
+                }
+            }
+        }
+    }
+    $sourceParams = array_values(array_unique($sourceParams));
+
+    $provinceId = trim((string) ($_GET['provinceId'] ?? ''));
+    $cityName = trim((string) ($_GET['cityName'] ?? ''));
+    if ($provinceId === '') {
+        $cityName = '';
+    }
+
     $where = ['1=1'];
     $types = '';
     $params = [];
 
-    if ($registeredParam === 'true') {
-        $where[] = is_registered_sql();
-    } elseif ($registeredParam === 'false') {
-        $where[] = 'NOT ' . is_registered_sql();
+    // A serial token (S391, M100) must match whether or not the row is registered
+    // and regardless of the report's date, group, source, or location filters.
+    $serialLookup = serial_search_is_serial_lookup($search);
+    if ($serialLookup) {
+        crm_debug_mark('serials_lookup_unfiltered', $search);
     }
 
-    if ($search !== '') {
-        $like = '%' . $search . '%';
-        $where[] = '(serial LIKE ? OR phone LIKE ? OR city LIKE ?)';
-        $types .= 'sss';
-        $params[] = $like;
-        $params[] = $like;
-        $params[] = $like;
-    }
-
-    [$dateWhere, $dateTypes, $dateParams] = serial_date_range_filters($conn, $table, $from, $to);
-    foreach ($dateWhere as $w) {
-        $where[] = $w;
-    }
-    $types .= $dateTypes;
-    foreach ($dateParams as $p) {
-        $params[] = $p;
-    }
-
-    $hasCategory = column_exists($conn, $table, 'category');
-    if ($hasCategory && $categoryParams !== []) {
-        $placeholders = implode(',', array_fill(0, count($categoryParams), '?'));
-        $where[] = "category IN ($placeholders)";
-        $types .= str_repeat('s', count($categoryParams));
-        foreach ($categoryParams as $c) {
-            $params[] = $c;
+    if (!$serialLookup) {
+        if ($registeredParam === 'true') {
+            $where[] = is_registered_sql();
+        } elseif ($registeredParam === 'false') {
+            $where[] = 'NOT ' . is_registered_sql();
         }
-    }
 
-    // groupIds: real serial_groups ids and/or legacy inventory bucket ids (900001/900002).
-    if ($groupIds !== []) {
-        require_once __DIR__ . '/serials_write.php';
-        sw_ensure_columns($conn, $table);
-        $groupClauses = [];
-        $realIds = [];
-        foreach ($groupIds as $gid) {
-            if (sw_is_legacy_group_id($gid)) {
-                $cat = sw_legacy_category_for_group_id($gid);
-                $ungrouped = sw_ungrouped_sql($table);
-                if ($hasCategory && $cat !== null) {
-                    $groupClauses[] = "($ungrouped AND category = ?)";
-                    $types .= 's';
-                    $params[] = $cat;
+        [$dateWhere, $dateTypes, $dateParams] = serial_date_range_filters($conn, $table, $from, $to);
+        foreach ($dateWhere as $w) {
+            $where[] = $w;
+        }
+        $types .= $dateTypes;
+        foreach ($dateParams as $p) {
+            $params[] = $p;
+        }
+
+        $hasCategory = column_exists($conn, $table, 'category');
+        if ($hasCategory && $categoryParams !== []) {
+            $placeholders = implode(',', array_fill(0, count($categoryParams), '?'));
+            $where[] = "category IN ($placeholders)";
+            $types .= str_repeat('s', count($categoryParams));
+            foreach ($categoryParams as $c) {
+                $params[] = $c;
+            }
+        }
+
+        $hasRegSource = column_exists($conn, $table, 'reg_source');
+        if ($hasRegSource && $sourceParams !== []) {
+            $sourceClauses = [];
+            foreach ($sourceParams as $src) {
+                if ($src === 'sms') {
+                    $sourceClauses[] = "(reg_source = 'sms' OR reg_source IS NULL OR reg_source = '')";
                 } else {
-                    $groupClauses[] = "($ungrouped)";
+                    $sourceClauses[] = 'reg_source = ?';
+                    $types .= 's';
+                    $params[] = $src;
                 }
-            } else {
-                $realIds[] = $gid;
+            }
+            if ($sourceClauses !== []) {
+                $where[] = '(' . implode(' OR ', $sourceClauses) . ')';
             }
         }
-        if ($realIds !== []) {
-            $placeholders = implode(',', array_fill(0, count($realIds), '?'));
-            $groupClauses[] = "lan_group_id IN ($placeholders)";
-            $types .= str_repeat('i', count($realIds));
-            foreach ($realIds as $gid) {
-                $params[] = $gid;
+
+        // groupIds: real serial_groups ids and/or legacy inventory bucket ids (900001/900002).
+        if ($groupIds !== []) {
+            require_once __DIR__ . '/serials_write.php';
+            sw_ensure_columns($conn, $table);
+            $groupClauses = [];
+            $realIds = [];
+            foreach ($groupIds as $gid) {
+                if (sw_is_legacy_group_id($gid)) {
+                    $cat = sw_legacy_category_for_group_id($gid);
+                    $ungrouped = sw_ungrouped_sql($table);
+                    if ($hasCategory && $cat !== null) {
+                        $groupClauses[] = "($ungrouped AND category = ?)";
+                        $types .= 's';
+                        $params[] = $cat;
+                    } else {
+                        $groupClauses[] = "($ungrouped)";
+                    }
+                } else {
+                    $realIds[] = $gid;
+                }
+            }
+            if ($realIds !== []) {
+                $placeholders = implode(',', array_fill(0, count($realIds), '?'));
+                $groupClauses[] = "lan_group_id IN ($placeholders)";
+                $types .= str_repeat('i', count($realIds));
+                foreach ($realIds as $gid) {
+                    $params[] = $gid;
+                }
+            }
+            if ($groupClauses !== []) {
+                $where[] = '(' . implode(' OR ', $groupClauses) . ')';
             }
         }
-        if ($groupClauses !== []) {
-            $where[] = '(' . implode(' OR ', $groupClauses) . ')';
+
+        require_once __DIR__ . '/iran_locations.php';
+        [$locWhere, $locTypes, $locParams] = serial_location_filters($provinceId, $cityName);
+        foreach ($locWhere as $w) {
+            $where[] = $w;
+        }
+        $types .= $locTypes;
+        foreach ($locParams as $p) {
+            $params[] = $p;
         }
     }
 
-    $hasJalali = column_exists($conn, $table, 'date_jalali');
-    $whereSql = implode(' AND ', $where);
-    $countSql = "SELECT COUNT(*) AS c FROM `$table` WHERE $whereSql";
-    if ($types !== '') {
-        $stmt = $conn->prepare($countSql);
-        $stmt->bind_param($types, ...$params);
+    // Broad registered lists sorted by date need idx_serials_reg_date: without it MySQL does ~50k row
+    // lookups + filesort (~20s on this host), so fall back to the sync-stamp order until it exists.
+    // Selective filters keep date order and the optimizer's own index choice.
+    $broadRegisteredList = $registeredParam === 'true' && $search === '' && $groupIds === [] && $provinceId === '';
+    $hasRegDateIndex = $broadRegisteredList && serial_table_has_index($conn, $table, 'idx_serials_reg_date');
+    $sortByDate = $registeredParam === 'true' && (!$broadRegisteredList || $hasRegDateIndex);
+    $order = serial_list_order_sql($conn, $table, $sortByDate);
+    $indexHint = $hasRegDateIndex ? 'FORCE INDEX (idx_serials_reg_date)' : '';
+    if ($broadRegisteredList && !$hasRegDateIndex) {
+        crm_debug_mark('serials_order_fallback', 'idx_serials_reg_date missing — using sync order');
+    }
+    $baseWhere = $where;
+    $baseTypes = $types;
+    $baseParams = $params;
+    $applySearch = static function (?array $filter) use ($baseWhere, $baseTypes, $baseParams): array {
+        $w = $baseWhere;
+        $t = $baseTypes;
+        $p = $baseParams;
+        if ($filter !== null) {
+            $w[] = $filter[0];
+            $t .= $filter[1];
+            foreach ($filter[2] as $v) {
+                $p[] = $v;
+            }
+        }
+        return [implode(' AND ', $w), $t, $p];
+    };
+    $runList = static function (string $whereSql, string $types, array $params) use ($conn, $table, $order, $limit, $offset, $indexHint): array {
+        $stmt = $conn->prepare("SELECT * FROM `$table` $indexHint WHERE $whereSql $order LIMIT ? OFFSET ?");
+        if (!$stmt) {
+            json_error('DB prepare failed: ' . $conn->error, 500);
+        }
+        $types2 = $types . 'ii';
+        $params2 = array_merge($params, [$limit, $offset]);
+        $stmt->bind_param($types2, ...$params2);
         $stmt->execute();
-        $total = (int) ($stmt->get_result()->fetch_assoc()['c'] ?? 0);
+        $res = $stmt->get_result();
+        $rows = [];
+        while ($row = $res->fetch_assoc()) {
+            $rows[] = $row;
+        }
         $stmt->close();
-    } else {
-        $total = (int) ($conn->query($countSql)->fetch_assoc()['c'] ?? 0);
-    }
+        if (crm_debug_enabled()) {
+            crm_debug_mark('serials_list_plan', trim($indexHint . ' ' . $order) . ' | ' . crm_debug_explain($conn, "SELECT * FROM `$table` $indexHint WHERE $whereSql $order LIMIT ? OFFSET ?", $types2, $params2));
+        }
+        return $rows;
+    };
 
-    $order = $hasJalali
-        ? 'ORDER BY COALESCE(NULLIF(TRIM(date_jalali), \'\'), CAST(time AS CHAR)) DESC, id DESC'
-        : 'ORDER BY time DESC, id DESC';
-    $listSql = "SELECT * FROM `$table` WHERE $whereSql $order LIMIT ? OFFSET ?";
-    $types2 = $types . 'ii';
-    $params2 = array_merge($params, [$limit, $offset]);
-    $stmt = $conn->prepare($listSql);
-    $stmt->bind_param($types2, ...$params2);
-    $stmt->execute();
-    $res = $stmt->get_result();
+    $searchMode = 'none';
+    if ($search === '') {
+        [$whereSql, $types, $params] = $applySearch(null);
+        $rawRows = $runList($whereSql, $types, $params);
+    } else {
+        $fastFilter = serial_search_filter($search, true);
+        $rawRows = [];
+        if ($fastFilter !== null) {
+            [$whereSql, $types, $params] = $applySearch($fastFilter);
+            $rawRows = $runList($whereSql, $types, $params);
+            $searchMode = 'prefix';
+            crm_debug_mark('serials_search_prefix', count($rawRows) . ' rows');
+        }
+        // A full serial ("S410390") can't match mid-string, so the full-scan fallback is pointless.
+        $looksLikeFullSerial = (bool) preg_match('/^[A-Za-z]+[0-9۰-۹٠-٩]{4,}$/u', trim($search));
+        $useSubstring = $rawRows === [] && !$looksLikeFullSerial;
+        if ($useSubstring && $fastFilter !== null && $page > 1) {
+            // Empty later page: only switch modes if the prefix search had no matches at all.
+            $probe = $conn->prepare("SELECT 1 FROM `$table` WHERE $whereSql LIMIT 1");
+            if ($probe) {
+                if ($types !== '') {
+                    $probe->bind_param($types, ...$params);
+                }
+                $probe->execute();
+                $useSubstring = stmt_fetch_assoc($probe) === null;
+                $probe->close();
+            }
+        }
+        if ($useSubstring) {
+            [$whereSql, $types, $params] = $applySearch(serial_search_filter($search, false));
+            $rawRows = $runList($whereSql, $types, $params);
+            $searchMode = 'substring';
+            crm_debug_mark('serials_search_substring', count($rawRows) . ' rows');
+        }
+    }
     require_once __DIR__ . '/settings_store.php';
     $smsProcessing = crm_settings_get_or_default($conn, 'sms_processing', crm_default_sms_processing());
-    $rawRows = [];
-    while ($row = $res->fetch_assoc()) {
-        $rawRows[] = $row;
+    crm_debug_mark('serials_list_query', count($rawRows) . ' rows page=' . $page . ' search=' . $searchMode);
+
+    $pageNotFull = count($rawRows) < $limit && ($rawRows !== [] || $page === 1);
+    if ($pageNotFull) {
+        $total = $offset + count($rawRows);
+        crm_debug_mark('serials_count_skipped', 'total=' . $total . ' (page not full)');
+    } elseif (
+        serial_list_uses_cached_total(
+            $registeredParam,
+            $search,
+            $from,
+            $to,
+            $sourceParams,
+            $categoryParams,
+            $groupIds,
+            $provinceId
+        )
+    ) {
+        $total = serial_cached_stats($conn, $table)['registered'];
+        crm_debug_mark('serials_count_cached', 'total=' . $total);
+    } else {
+        $countSql = "SELECT COUNT(*) AS c FROM `$table` WHERE $whereSql";
+        if ($types !== '') {
+            $countStmt = $conn->prepare($countSql);
+            $countStmt->bind_param($types, ...$params);
+            $countStmt->execute();
+            $total = (int) ($countStmt->get_result()->fetch_assoc()['c'] ?? 0);
+            $countStmt->close();
+        } else {
+            $total = (int) ($conn->query($countSql)->fetch_assoc()['c'] ?? 0);
+        }
+        crm_debug_mark('serials_count_sql', 'total=' . $total);
     }
-    $stmt->close();
+
     $phones = [];
+    $excludeSerialByPhone = [];
     foreach ($rawRows as $row) {
         $p = isset($row['phone']) ? trim((string) $row['phone']) : '';
         if ($p !== '') {
             $phones[] = $p;
+            if (empty($row['city']) || trim((string) $row['city']) === '') {
+                $excludeSerialByPhone[$p] = (string) ($row['serial'] ?? '');
+            }
         }
     }
-    $knownByPhone = serial_known_cities_for_phones($conn, $phones);
+    $knownByPhone = serial_known_cities_for_phones($conn, $phones, $excludeSerialByPhone);
+    crm_debug_mark('serials_known_cities', count($knownByPhone) . ' phones');
     require_once __DIR__ . '/bots_store.php';
     $pairing = bots_pairing_map_for_phones($conn, $phones);
+    crm_debug_mark('serials_bot_pairing', count($phones) . ' phones');
     $smsProcessing['__pairing'] = $pairing;
     $items = [];
     foreach ($rawRows as $row) {
         $p = isset($row['phone']) ? trim((string) $row['phone']) : '';
         $known = $p !== '' ? ($knownByPhone[$p] ?? null) : null;
-        // If the only known city is this row's own city, still OK for missing check
-        // (serial_missing_fields treats row city first). Prefer other-row city when
-        // looking up "once set" — re-resolve excluding this serial when row city blank.
-        if ($known !== null && (empty($row['city']) || trim((string) $row['city']) === '')) {
-            $known = serial_known_city_for_phone($conn, $p, (string) ($row['serial'] ?? '')) ?? $known;
-        }
         $items[] = row_to_serial($row, $smsProcessing, $known);
     }
+    crm_debug_mark('serials_row_map', count($items) . ' items');
     json_out(['items' => $items, 'total' => $total, 'page' => $page, 'limit' => $limit]);
+}
+
+/**
+ * Persist missing date_jalali from Gregorian `time` for registered rows that show
+ * null dates in reports (display already falls back via serial_date_jalali).
+ * Does not touch dual-buffer get/send/backfill.
+ */
+if ($path === '/serials/repair-null-dates' && $method === 'POST') {
+    require_once __DIR__ . '/serials_write.php';
+    $table = serials_table($conn);
+    sw_ensure_columns($conn, $table);
+    $hasJalali = column_exists($conn, $table, 'date_jalali');
+    if (!$hasJalali) {
+        json_out([
+            'ok' => true,
+            'scanned' => 0,
+            'fixedLocal' => 0,
+            'fixedRemote' => 0,
+            'unfixed' => 0,
+            'message' => 'ستون date_jalali در دسترس نیست',
+        ]);
+    }
+
+    $registeredSql = is_registered_sql();
+    $nullJalali = "(date_jalali IS NULL OR TRIM(date_jalali) = '' OR LOWER(TRIM(date_jalali)) = 'null')";
+    $countRes = $conn->query(
+        "SELECT COUNT(*) AS c FROM `$table` WHERE $registeredSql AND $nullJalali"
+    );
+    $scanned = ($countRes && ($cr = $countRes->fetch_assoc())) ? (int) ($cr['c'] ?? 0) : 0;
+
+    $fixedLocal = 0;
+    $unfixed = 0;
+    $res = $conn->query(
+        "SELECT * FROM `$table` WHERE $registeredSql AND $nullJalali ORDER BY id ASC LIMIT 5000"
+    );
+    require_once __DIR__ . '/sync/sync_buffer_helpers.php';
+    if ($res) {
+        while ($row = $res->fetch_assoc()) {
+            $date = serial_date_jalali($row);
+            if ($date === null || trim($date) === '') {
+                $unfixed++;
+                continue;
+            }
+            $id = (int) ($row['id'] ?? 0);
+            if ($id <= 0) {
+                $unfixed++;
+                continue;
+            }
+            $syncMs = (int) round(microtime(true) * 1000);
+            $sets = ['date_jalali=?'];
+            $types = 's';
+            $bind = [$date];
+            if (column_exists($conn, $table, 'sync_updated_ms')) {
+                $sets[] = 'sync_updated_ms=?';
+                $types .= 'i';
+                $bind[] = $syncMs;
+            }
+            $types .= 'i';
+            $bind[] = $id;
+            $sql = "UPDATE `$table` SET " . implode(', ', $sets) . " WHERE id=? AND $nullJalali";
+            $stmt = $conn->prepare($sql);
+            if (!$stmt) {
+                $unfixed++;
+                continue;
+            }
+            $stmt->bind_param($types, ...$bind);
+            $stmt->execute();
+            $affected = $stmt->affected_rows;
+            $stmt->close();
+            if ($affected <= 0) {
+                $unfixed++;
+                continue;
+            }
+            $fixedLocal++;
+            $row['date_jalali'] = $date;
+            if (column_exists($conn, $table, 'sync_updated_ms')) {
+                $row['sync_updated_ms'] = $syncMs;
+            }
+            // Notify phones of the repaired date without running a full buffer get/send.
+            sync_buffer_enqueue_serial_row($conn, $row);
+        }
+    }
+
+    $message = 'بررسی ' . $scanned . ' ردیف — محلی: ' . $fixedLocal;
+    if ($unfixed > 0) {
+        $message .= '، بدون تاریخ: ' . $unfixed;
+    }
+    json_out([
+        'ok' => true,
+        'scanned' => $scanned,
+        'fixedLocal' => $fixedLocal,
+        'fixedRemote' => 0,
+        'unfixed' => $unfixed,
+        'message' => $message,
+    ]);
 }
 
 if (preg_match('#^/serials/(\d+)/send-completion-reminder$#', $path, $m) && $method === 'POST') {
@@ -502,10 +749,21 @@ if (preg_match('#^/serials/(\d+)$#', $path, $m) && $method === 'PUT') {
     $id = (int) $m[1];
     $body = body_json();
     $table = serials_table($conn);
+    require_once __DIR__ . '/comms_store.php';
+    $existing = $conn->query("SELECT * FROM `$table` WHERE id = " . (int) $id)->fetch_assoc();
+    if (!$existing) {
+        json_error('Not found', 404);
+    }
     $serial = trim((string) ($body['serial'] ?? ''));
     $date = trim((string) ($body['date'] ?? ''));
     if ($serial === '') {
         json_error('serial required');
+    }
+    $oldPhone = comms_normalize_phone((string) ($existing['phone'] ?? ''));
+    $phoneInput = array_key_exists('phone', $body) ? trim((string) $body['phone']) : '';
+    $newPhone = $phoneInput !== '' ? comms_normalize_phone($phoneInput) : $oldPhone;
+    if ($newPhone === '' || !preg_match('/^09\d{9}$/', $newPhone)) {
+        json_error('شماره موبایل نامعتبر است', 400);
     }
     $citySql = array_key_exists('city', $body)
         ? ($body['city'] !== null ? (string) $body['city'] : null)
@@ -514,9 +772,9 @@ if (preg_match('#^/serials/(\d+)$#', $path, $m) && $method === 'PUT') {
     $kmSql = $hasKm && $body['km'] !== null && $body['km'] !== '' ? (int) $body['km'] : null;
     $hasJalali = column_exists($conn, $table, 'date_jalali');
 
-    $sets = ['serial=?'];
-    $types = 's';
-    $bind = [$serial];
+    $sets = ['serial=?', 'phone=?'];
+    $types = 'ss';
+    $bind = [$serial, $newPhone];
     if ($hasJalali) {
         $sets[] = 'date_jalali=?';
         $types .= 's';
@@ -550,6 +808,18 @@ if (preg_match('#^/serials/(\d+)$#', $path, $m) && $method === 'PUT') {
     if (!$got) {
         json_error('Not found', 404);
     }
+    $message = crm_build_registration_confirmation_message($conn, $got);
+    $sendResult = crm_send_panel_sms($newPhone, $message);
+    if ($sendResult !== true) {
+        comms_insert($conn, $newPhone, 'outgoing', $message, 'sms', 'failed');
+        json_error(
+            is_string($sendResult) && $sendResult !== ''
+                ? $sendResult
+                : 'SMS send failed',
+            502
+        );
+    }
+    comms_insert($conn, $newPhone, 'outgoing', $message, 'sms', 'sent');
     require_once __DIR__ . '/sync/sync_buffer_helpers.php';
     sync_buffer_enqueue_serial_row($conn, $got);
     require_once __DIR__ . '/activity_store.php';
@@ -591,6 +861,8 @@ if (preg_match('#^/serial-groups/(\d+)$#', $path, $m) && $method === 'PUT') {
 // Persistable CRM settings (GET/PUT) + club auto rules + admin users.
 crm_handle_settings_routes($conn, $method, $path);
 crm_handle_club_auto_routes($conn, $method, $path);
+require_once __DIR__ . '/announcement_store.php';
+crm_handle_announcement_routes($conn, $method, $path);
 crm_handle_admin_user_routes($conn, $method, $path, $user);
 
 require_once __DIR__ . '/comms_bots_routes.php';
@@ -608,6 +880,7 @@ if ($path === '/serial-errors/clients' && $method === 'GET') {
     $page = max(1, (int) ($_GET['page'] ?? 1));
     $limit = max(1, min(100, (int) ($_GET['limit'] ?? 9)));
     $result = sre_list_clients($conn, $page, $limit);
+    crm_debug_mark('serial_errors_clients', count($result['items']) . ' items total=' . $result['total']);
     json_out([
         'items' => $result['items'],
         'total' => $result['total'],
@@ -631,8 +904,12 @@ if ($path === '/serial-errors' && $method === 'GET') {
     ]);
 }
 
+if ($path === '/mass-sms/provinces' && $method === 'GET') {
+    require_once __DIR__ . '/iran_locations.php';
+    json_out(['items' => iran_provinces_load()]);
+}
+
 $stubsGet = [
-    '/mass-sms/provinces' => ['items' => []],
     '/mass-sms/campaigns' => ['items' => []],
     '/referral/customers' => ['items' => [], 'total' => 0],
     '/whatsapp/engine/status' => [
@@ -668,6 +945,7 @@ if (in_array($method, ['POST', 'PUT', 'DELETE'], true)) {
     // Settings / club-auto / admin users / lottery preset / whatsapp config are handled above.
     $settingsWriteOk = starts_with($path, '/settings')
         || starts_with($path, '/club-auto-messages')
+        || starts_with($path, '/announcements')
         || $path === '/whatsapp/config'
         || starts_with($path, '/lottery')
         || starts_with($path, '/admin/users')

@@ -187,6 +187,14 @@ function crm_default_referral(): array
     ];
 }
 
+function crm_default_club_welcome(): array
+{
+    return [
+        'enabled' => false,
+        'message' => '',
+    ];
+}
+
 function crm_default_whatsapp_config(): array
 {
     return [
@@ -627,6 +635,21 @@ function crm_handle_settings_routes(mysqli $conn, string $method, string $path):
         }
     }
 
+    // ----- Club welcome SMS (on successful registration) -----
+    if ($path === '/settings/club-welcome') {
+        if ($method === 'GET') {
+            json_out(crm_settings_get_or_default($conn, 'club_welcome_settings', crm_default_club_welcome()));
+        }
+        if ($method === 'PUT') {
+            $body = body_json();
+            $out = [
+                'enabled' => (bool) ($body['enabled'] ?? false),
+                'message' => trim((string) ($body['message'] ?? '')),
+            ];
+            json_out(crm_settings_put($conn, 'club_welcome_settings', $out));
+        }
+    }
+
     // ----- WhatsApp config -----
     if ($path === '/whatsapp/config') {
         if ($method === 'GET') {
@@ -1037,7 +1060,9 @@ function crm_handle_club_auto_routes(mysqli $conn, string $method, string $path)
     }
     if ($path === '/club-auto-messages/tick' && $method === 'POST') {
         $summary = crm_club_run_due_rules($conn);
-        json_out(['ok' => true] + $summary);
+        require_once __DIR__ . '/announcement_runner.php';
+        $announcements = crm_ann_tick_all($conn);
+        json_out(['ok' => true] + $summary + ['announcements' => $announcements]);
     }
 
     return false;

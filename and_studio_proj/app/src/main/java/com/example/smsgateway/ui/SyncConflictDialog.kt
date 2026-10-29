@@ -32,6 +32,8 @@ import com.example.smsgateway.cloud.SyncConflictItem
 import com.example.smsgateway.cloud.SyncConflictSession
 import org.json.JSONObject
 
+private const val MAX_VISIBLE_CONFLICTS = 40
+
 @Composable
 fun SyncConflictDialog(
     session: SyncConflictSession,
@@ -56,11 +58,18 @@ fun SyncConflictDialog(
                     .verticalScroll(rememberScrollState()),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                session.conflicts.forEach { item ->
+                session.conflicts.take(MAX_VISIBLE_CONFLICTS).forEach { item ->
                     ConflictRow(
                         item = item,
                         choice = choices[item.serial] ?: SyncConflictChoice.LOCAL,
                         onChoice = { choices[item.serial] = it },
+                    )
+                }
+                if (session.conflicts.size > MAX_VISIBLE_CONFLICTS) {
+                    Text(
+                        text = "… و ${(session.conflicts.size - MAX_VISIBLE_CONFLICTS)} تداخل دیگر (با انتخاب پیش‌فرض محلی حل می‌شوند)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
